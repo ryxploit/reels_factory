@@ -1,0 +1,5 @@
+pytest>=7.4.0
+pyinstaller>=6.3.0
+dmgbuild>=1.6.5; sys_platform == "darwin"
+cx_Freeze>=7.2.0; sys_platform == "win32"
+
