@@ -40,6 +40,14 @@ class VideoConfig:
     
     # Frame rate
     FPS: int = 30
+    
+    # Undetectability variations (subtle random changes to avoid fingerprinting)
+    ENABLE_VARIATIONS: bool = True
+    BRIGHTNESS_VARIATION: float = 0.01  # ±1% brightness
+    CONTRAST_VARIATION: float = 0.01    # ±1% contrast
+    SATURATION_VARIATION: float = 0.01  # ±1% saturation
+    NOISE_STRENGTH_MIN: int = 1
+    NOISE_STRENGTH_MAX: int = 3
 
 
 @dataclass

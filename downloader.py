@@ -8,7 +8,8 @@ Optimized for reliability and quality.
 from pathlib import Path
 import os
 import threading
-from typing import Optional, Callable
+import re
+from typing import Optional, Callable, List
 from dataclasses import dataclass
 
 from config import config
@@ -32,6 +33,7 @@ class DownloadResult:
     video_info: Optional[dict]
     error_message: Optional[str] = None
     original_title: Optional[str] = None
+    hashtags: Optional[List[str]] = None
 
 
 class TikTokDownloader:
@@ -50,6 +52,29 @@ class TikTokDownloader:
         self.output_dir = output_dir or config.paths.DOWNLOADS_PATH
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+    def _get_yt_dlp_options(self, output_path: Path) -> dict:
+        """
+        Get yt-dlp options for downloading.
+        
+        Args:
+            output_path: Path where to save the video
+        
+        Returns:
+            Dictionary of yt-dlp options
+        """
+        return {
+            "outtmpl": str(output_path),
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "retries": 3,
+            "fragment_retries": 3,
+            "sleep_interval": 1,
+            "quiet": True,
+            "no_warnings": True,
+            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        }
+
     def _get_video_metadata(self, url: str) -> Optional[dict]:
         """
         Fetch video metadata without downloading.
@@ -74,6 +99,28 @@ class TikTokDownloader:
         except Exception as e:
             logger.error(f"Error fetching metadata: {e}")
             return None
+
+    def _extract_hashtags(self, text: str) -> list[str]:
+        """
+        Extract hashtags from a text string.
+
+        Args:
+            text: Raw text from title/description
+
+        Returns:
+            List of unique hashtags preserving order
+        """
+        if not text:
+            return []
+        tags = re.findall(r"#\w+", text, flags=re.UNICODE)
+        seen = set()
+        unique = []
+        for tag in tags:
+            if tag.lower() in seen:
+                continue
+            seen.add(tag.lower())
+            unique.append(tag)
+        return unique
     
     def download(
         self,
@@ -108,10 +155,13 @@ class TikTokDownloader:
         # Get metadata first
         metadata = self._get_video_metadata(url)
         original_title = None
+        hashtags: Optional[list[str]] = None
         
         if metadata:
             original_title = metadata.get('title', metadata.get('description', ''))[:50]
             logger.info(f"Video found: {original_title}")
+            raw_text = metadata.get('description') or metadata.get('title') or ""
+            hashtags = self._extract_hashtags(raw_text)
         
         progress.update(10, 100, "Preparing download...")
         
@@ -168,19 +218,8 @@ class TikTokDownloader:
                 except Exception:
                     return
 
-            ydl_opts = {
-                "outtmpl": str(output_path),
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "merge_output_format": "mp4",
-                "noplaylist": True,
-                "retries": 3,
-                "fragment_retries": 3,
-                "sleep_interval": 1,
-                "quiet": True,
-                "no_warnings": True,
-                "progress_hooks": [hook],
-                "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            }
+            ydl_opts = self._get_yt_dlp_options(output_path)
+            ydl_opts["progress_hooks"] = [hook]
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -214,7 +253,8 @@ class TikTokDownloader:
                 success=True,
                 file_path=output_path,
                 video_info=video_info,
-                original_title=original_title
+                original_title=original_title,
+                hashtags=hashtags,
             )
             
         except DownloadCancelled:

@@ -200,8 +200,8 @@ setup_venv_and_python_deps() {
 
   # shellcheck disable=SC1091
   source "$VENV_PATH/bin/activate"
-  python -m pip install -U pip
-  pip install -r requirements.txt
+  "$VENV_PATH/bin/python" -m pip install -U pip
+  "$VENV_PATH/bin/pip" install -r requirements.txt
 }
 
 verify_runtime_deps() {
@@ -213,14 +213,7 @@ verify_runtime_deps() {
     die "❌ ffprobe no está disponible (viene con FFmpeg). Reinstala FFmpeg."
   fi
 
-  if ! ffmpeg_has_subtitles_filter; then
-    log "⚠️  Tu FFmpeg no trae el filtro 'subtitles' (libass)."
-    if is_macos; then
-      log "   Solución: brew install ffmpeg-full (y ejecuta ./run.sh)."
-    else
-      log "   Solución: instala un build 'full' de FFmpeg con libass."
-    fi
-  fi
+  # El aviso de soporte de subtítulos se maneja en la UI.
 }
 
 main() {
@@ -240,7 +233,8 @@ main() {
   export PYTORCH_ENABLE_MPS_FALLBACK=1
 
   log "🚀 Iniciando aplicación..."
-  python app.py
+  py="$(choose_python)"
+  "$VENV_PATH/bin/python" app.py
 }
 
 main "${1:-}"

@@ -14,6 +14,10 @@ Optimized for macOS Apple Silicon.
 import subprocess
 import queue
 import threading
+import random
+import time
+import shutil
+import uuid
 from pathlib import Path
 from typing import Optional, Callable, Tuple
 from dataclasses import dataclass
@@ -138,6 +142,21 @@ class VideoProcessor:
         # 3. Set frame rate
         filters.append(f"fps={self.video_config.FPS}")
         
+        # 4. Apply subtle variations to avoid content fingerprint detection
+        if self.video_config.ENABLE_VARIATIONS:
+            # Random seed based on time to ensure unique output each processing
+            random.seed(int(time.time() * 1000))
+            
+            # Subtle brightness/contrast variation (imperceptible to human eye)
+            brightness_var = random.uniform(-self.video_config.BRIGHTNESS_VARIATION, self.video_config.BRIGHTNESS_VARIATION)
+            contrast_var = random.uniform(1 - self.video_config.CONTRAST_VARIATION, 1 + self.video_config.CONTRAST_VARIATION)
+            saturation_var = random.uniform(1 - self.video_config.SATURATION_VARIATION, 1 + self.video_config.SATURATION_VARIATION)
+            filters.append(f"eq=brightness={brightness_var:.4f}:contrast={contrast_var:.4f}:saturation={saturation_var:.4f}")
+            
+            # Add minimal noise to alter pixel fingerprint (almost invisible)
+            noise_strength = random.randint(self.video_config.NOISE_STRENGTH_MIN, self.video_config.NOISE_STRENGTH_MAX)
+            filters.append(f"noise=c0s={noise_strength}:allf=t")
+        
         # Combine base video filters
         video_filter = ",".join(filters)
         
@@ -167,7 +186,13 @@ class VideoProcessor:
         subtitle_path: Optional[Path] = None
     ) -> list[str]:
         """
-        Build complete FFmpeg command.
+        Build complete FFmpeg command for video processing.
+        
+        The command is constructed in stages:
+        1. Input files
+        2. Video filters (crop, scale, variations, subtitles, logo)
+        3. Encoding settings
+        4. Metadata removal
         
         Args:
             input_path: Source video path
@@ -189,43 +214,93 @@ class VideoProcessor:
 
         cmd = [str(bins.ffmpeg), '-y']
         
-        # Input video
-        cmd.extend(['-i', str(input_path)])
+        # Add input files
+        cmd.extend(self._add_input_files(input_path, logo_path))
         
-        # Input logo if provided
-        use_complex_filter = logo_path and logo_path.exists()
-        if use_complex_filter:
-            cmd.extend(['-i', str(logo_path)])
-        
-        # Duration limit
+        # Set duration limit
         cmd.extend(['-t', str(max_duration)])
         
-        # Build filter
+        # Build and add video filters
         video_filter = self._build_video_filters(
             input_width, input_height,
-            logo_path if use_complex_filter else None,
+            logo_path if logo_path and logo_path.exists() else None,
             subtitle_path
         )
         
+        use_complex_filter = logo_path and logo_path.exists()
         if use_complex_filter:
             cmd.extend(['-filter_complex', video_filter, '-map', '[out]', '-map', '0:a?'])
         else:
             cmd.extend(['-vf', video_filter])
         
-        if subtitle_path and subtitle_path.exists():
-            escaped_path = self._escape_filter_value(str(subtitle_path))
-            subtitle_filter = f"subtitles=filename='{escaped_path}':charenc=UTF-8"
+        # Add subtitle filters if needed
+        self._add_subtitle_filters(cmd, subtitle_path, use_complex_filter)
+        
+        # Add encoding settings
+        cmd.extend(self._add_encoding_settings())
+        
+        # Add metadata and optimization settings
+        cmd.extend(self._add_metadata_settings())
+        
+        # Output file
+        cmd.append(str(output_path))
+        
+        return cmd
 
-            if use_complex_filter:
-                current_filter = cmd[cmd.index('-filter_complex') + 1]
-                new_filter = current_filter.replace(
-                    '[out]',
-                    f"[temp];[temp]{subtitle_filter}[out]"
-                )
-                cmd[cmd.index('-filter_complex') + 1] = new_filter
-            else:
-                current_vf = cmd[cmd.index('-vf') + 1]
-                cmd[cmd.index('-vf') + 1] = f"{current_vf},{subtitle_filter}"
+    def _add_input_files(self, input_path: Path, logo_path: Optional[Path]) -> list[str]:
+        """
+        Add input files to FFmpeg command.
+        
+        Args:
+            input_path: Path to the main video file
+            logo_path: Optional path to logo file
+        
+        Returns:
+            List of FFmpeg arguments for inputs
+        """
+        cmd = ['-i', str(input_path)]
+        if logo_path and logo_path.exists():
+            cmd.extend(['-i', str(logo_path)])
+        return cmd
+
+    def _add_subtitle_filters(self, cmd: list[str], subtitle_path: Optional[Path], use_complex_filter: bool) -> None:
+        """
+        Add subtitle filters to the FFmpeg command if subtitles are provided.
+        
+        Args:
+            cmd: FFmpeg command list to modify
+            subtitle_path: Path to subtitle file
+            use_complex_filter: Whether complex filter is being used
+        """
+        if not subtitle_path or not subtitle_path.exists():
+            return
+        
+        # Create a temporary copy with a safe filename to avoid FFmpeg escaping issues
+        safe_subtitle_path = self.temp_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
+        shutil.copy2(subtitle_path, safe_subtitle_path)
+        
+        escaped_path = self._escape_filter_value(str(safe_subtitle_path))
+        subtitle_filter = f"subtitles=filename='{escaped_path}':charenc=UTF-8"
+
+        if use_complex_filter:
+            current_filter = cmd[cmd.index('-filter_complex') + 1]
+            new_filter = current_filter.replace(
+                '[out]',
+                f"[temp];[temp]{subtitle_filter}[out]"
+            )
+            cmd[cmd.index('-filter_complex') + 1] = new_filter
+        else:
+            current_vf = cmd[cmd.index('-vf') + 1]
+            cmd[cmd.index('-vf') + 1] = f"{current_vf},{subtitle_filter}"
+
+    def _add_encoding_settings(self) -> list[str]:
+        """
+        Add video and audio encoding settings.
+        
+        Returns:
+            List of FFmpeg encoding arguments
+        """
+        cmd = []
         
         # Video codec settings (H.264 compatible with Facebook)
         cmd.extend([
@@ -250,12 +325,38 @@ class VideoProcessor:
         # Optimize for streaming/upload
         cmd.extend(['-movflags', '+faststart'])
         
-        # Output file
-        cmd.append(str(output_path))
-        
         return cmd
 
+    def _add_metadata_settings(self) -> list[str]:
+        """
+        Add metadata removal and bitexact settings to avoid platform detection.
+        
+        Returns:
+            List of FFmpeg metadata arguments
+        """
+        return [
+            # Strip all metadata from source to avoid platform detection
+            '-map_metadata', '-1',
+            # Remove chapter markers
+            '-map_chapters', '-1',
+            # Produce reproducible output without timestamps
+            '-fflags', '+bitexact',
+            # Video stream bitexact
+            '-flags:v', '+bitexact',
+            # Audio stream bitexact
+            '-flags:a', '+bitexact',
+        ]
+
     def _escape_filter_value(self, value: str) -> str:
+        """
+        Escape special characters for FFmpeg filter values.
+        
+        Args:
+            value: String to escape
+        
+        Returns:
+            Escaped string safe for FFmpeg filters
+        """
         return (
             value.replace('\\', r'\\\\')
             .replace("'", r"\\'")

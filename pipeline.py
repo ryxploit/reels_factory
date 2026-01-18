@@ -42,6 +42,8 @@ class JobResult:
     downloaded_path: Optional[Path]
     output_path: Optional[Path]
     error_message: Optional[str] = None
+    title: Optional[str] = None
+    hashtags: Optional[list[str]] = None
 
 
 class ReelsPipeline:
@@ -54,6 +56,21 @@ class ReelsPipeline:
         self.downloader = TikTokDownloader(downloads_dir or config.paths.DOWNLOADS_PATH)
         self.processor = VideoProcessor(output_dir or config.paths.PROCESSED_PATH)
         self.subtitler = SubtitleGenerator(subtitles_dir or config.paths.SUBTITLES_PATH)
+
+    def _calculate_progress(self, stage_start: int, stage_end: int, sub_progress: float) -> int:
+        """
+        Calculate overall progress based on current stage and sub-progress.
+        
+        Args:
+            stage_start: Start percentage of the current stage
+            stage_end: End percentage of the current stage
+            sub_progress: Progress within the stage (0-100)
+        
+        Returns:
+            Overall progress percentage
+        """
+        stage_range = stage_end - stage_start
+        return stage_start + int((sub_progress / 100) * stage_range)
 
     def run_one(
         self,
@@ -87,7 +104,7 @@ class ReelsPipeline:
 
         dl = self.downloader.download(
             url,
-            progress_callback=lambda c, _t, s: p(max(1, min(35, int(c * 0.35))), s),
+            progress_callback=lambda c, _t, s: p(self._calculate_progress(1, 35, c), s),
             cancel_event=cancel_event,
         )
         if not dl.success or not dl.file_path:
@@ -96,7 +113,9 @@ class ReelsPipeline:
                 success=False,
                 downloaded_path=None,
                 output_path=None,
-                error_message=dl.error_message or "Falló la descarga",
+                    error_message=dl.error_message or "Falló la descarga",
+                    title=dl.original_title,
+                    hashtags=dl.hashtags,
             )
 
         downloaded_path = dl.file_path
@@ -106,11 +125,10 @@ class ReelsPipeline:
 
         subtitle_path = None
         if settings.subtitles:
-            self.subtitler.model_size = settings.whisper_model
             sub = self.subtitler.generate(
                 downloaded_path,
                 language=settings.language,
-                progress_callback=lambda c, _t, s: p(35 + max(0, min(35, int(c * 0.35))), s),
+                progress_callback=lambda c, _t, s: p(self._calculate_progress(35, 70, c), s),
                 cancel_event=cancel_event,
             )
             if not sub.success or not sub.subtitle_path:
@@ -119,7 +137,9 @@ class ReelsPipeline:
                     success=False,
                     downloaded_path=downloaded_path,
                     output_path=None,
-                    error_message=sub.error_message or "Falló la transcripción",
+                        error_message=sub.error_message or "Falló la transcripción",
+                        title=dl.original_title,
+                        hashtags=dl.hashtags,
                 )
             subtitle_path = sub.subtitle_path
             l(f"Subtítulos: {subtitle_path.name}")
@@ -131,7 +151,7 @@ class ReelsPipeline:
             input_path=downloaded_path,
             logo_path=logo_path,
             subtitle_path=subtitle_path,
-            progress_callback=lambda c, _t, s: p(70 + max(0, min(30, int(c * 0.30))), s),
+            progress_callback=lambda c, _t, s: p(self._calculate_progress(70, 100, c), s),
             cancel_event=cancel_event,
         )
         if not out.success or not out.file_path:
@@ -140,7 +160,9 @@ class ReelsPipeline:
                 success=False,
                 downloaded_path=downloaded_path,
                 output_path=None,
-                error_message=out.error_message or "Falló el procesamiento",
+                    error_message=out.error_message or "Falló el procesamiento",
+                    title=dl.original_title,
+                    hashtags=dl.hashtags,
             )
 
         p(100, "Listo")
@@ -162,4 +184,6 @@ class ReelsPipeline:
             success=True,
             downloaded_path=downloaded_path,
             output_path=out.file_path,
+                title=dl.original_title,
+                hashtags=dl.hashtags,
         )

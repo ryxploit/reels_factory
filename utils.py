@@ -91,7 +91,8 @@ def sanitize_filename(filename: str, max_length: int = 50) -> str:
     Returns:
         Sanitized filename
     """
-    sanitized = re.sub(r'[<>:"/\\|?*#\[\],;=\n\r\t]', '', filename)
+    # Remove problematic characters including apostrophes and quotes
+    sanitized = re.sub(r'[<>:"/\\|?*#\[\],;=\n\r\t\'"`]', '', filename)
     # Replace spaces with underscores
     sanitized = re.sub(r'\s+', '_', sanitized)
     # Remove non-ASCII characters
@@ -253,6 +254,7 @@ def get_video_info(file_path: Path) -> Optional[dict]:
         bins = resolve_binaries()
         if not bins.ffprobe:
             return None
+        
         result = subprocess.run([
             str(bins.ffprobe),
             '-v', 'quiet',
@@ -260,28 +262,32 @@ def get_video_info(file_path: Path) -> Optional[dict]:
             '-show_format',
             '-show_streams',
             str(file_path)
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, timeout=30)
         
         if result.returncode == 0:
             import json
             data = json.loads(result.stdout)
             
-            # Extract relevant info
-            video_stream = next(
-                (s for s in data.get('streams', []) if s['codec_type'] == 'video'),
-                None
-            )
+            # Find video stream
+            video_stream = None
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    video_stream = stream
+                    break
             
             if video_stream:
-                duration = float(data.get('format', {}).get('duration', 0))
+                format_info = data.get('format', {})
+                duration = float(format_info.get('duration', 0))
+                
+                # Parse FPS
                 fps_raw = str(video_stream.get('r_frame_rate', '30/1'))
-                fps = 30.0
                 try:
                     fps = float(Fraction(fps_raw))
-                    if fps <= 0:
+                    if fps <= 0 or fps > 120:  # Sanity check
                         fps = 30.0
-                except Exception:
+                except (ValueError, ZeroDivisionError):
                     fps = 30.0
+                
                 return {
                     'width': int(video_stream.get('width', 0)),
                     'height': int(video_stream.get('height', 0)),
@@ -289,13 +295,13 @@ def get_video_info(file_path: Path) -> Optional[dict]:
                     'duration_formatted': format_duration(duration),
                     'codec': video_stream.get('codec_name', 'unknown'),
                     'fps': fps,
-                    'size': int(data.get('format', {}).get('size', 0)),
-                    'size_formatted': format_file_size(
-                        int(data.get('format', {}).get('size', 0))
-                    )
+                    'size': int(format_info.get('size', 0)),
+                    'size_formatted': format_file_size(int(format_info.get('size', 0))),
                 }
+        
         return None
-    except Exception:
+    
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
         return None
 
 

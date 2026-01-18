@@ -188,17 +188,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         
         Args:
             video_path: Path to video file
+            cancel_event: Optional cancellation event
         
         Returns:
             Path to extracted audio file
+        
+        Raises:
+            RuntimeError: If extraction fails
         """
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=str(config.paths.TEMP_PATH))
-        os.close(fd)
-        audio_path = Path(tmp_path)
-
         bins = resolve_binaries()
         if not bins.ffmpeg:
             raise RuntimeError("FFmpeg not found")
+        
+        # Use a context manager for the temporary file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".wav", dir=str(config.paths.TEMP_PATH), delete=False) as tmp_file:
+            audio_path = Path(tmp_file.name)
         
         cmd = [
             str(bins.ffmpeg),
@@ -215,14 +220,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             str(audio_path),
         ]
 
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
             while process.poll() is None:
                 if cancel_event and cancel_event.is_set():
                     process.terminate()
                     try:
                         process.wait(timeout=2)
-                    except Exception:
+                    except subprocess.TimeoutExpired:
                         process.kill()
                     audio_path.unlink(missing_ok=True)
                     raise RuntimeError("Cancelado")
@@ -232,18 +238,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if process.returncode != 0:
                 audio_path.unlink(missing_ok=True)
                 raise RuntimeError(f"Audio extraction failed: {(stderr or stdout).strip()}")
-        finally:
-            try:
-                if process.stdout:
-                    process.stdout.close()
-            except Exception:
-                pass
-            try:
-                if process.stderr:
-                    process.stderr.close()
-            except Exception:
-                pass
-
+        
+        except Exception:
+            audio_path.unlink(missing_ok=True)
+            raise
+        
         return audio_path
     
     def generate(
