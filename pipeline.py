@@ -28,6 +28,8 @@ class PipelineSettings:
     branding: bool = False
     logo_path: Path | None = None
     cleanup_intermediates: bool = False
+    word_highlight: bool = True
+    loudnorm: bool = True
 
 
 class CancelledError(Exception):
@@ -43,6 +45,10 @@ class JobResult:
     error_message: str | None = None
     title: str | None = None
     hashtags: list[str] | None = None
+    warnings: list[str] | None = None
+    thumbnail_path: Path | None = None
+    subtitle_path: Path | None = None
+    segments: list | None = None
 
 
 class ReelsPipeline:
@@ -136,6 +142,8 @@ class ReelsPipeline:
             # Respeta el modelo elegido por el usuario en la GUI.
             if settings.whisper_model:
                 self.subtitler.model_size = settings.whisper_model
+            # El resaltado por palabra se controla por trabajo.
+            self.subtitler.subtitle_config.ENABLE_WORD_HIGHLIGHT = settings.word_highlight
             sub = self.subtitler.generate(
                 downloaded_path,
                 language=settings.language,
@@ -158,6 +166,8 @@ class ReelsPipeline:
         raise_if_cancelled()
 
         logo_path = settings.logo_path if settings.branding else None
+        # La normalización de audio se controla por trabajo.
+        self.processor.video_config.ENABLE_LOUDNORM = settings.loudnorm
         out = self.processor.process(
             input_path=downloaded_path,
             logo_path=logo_path,
@@ -179,6 +189,9 @@ class ReelsPipeline:
         p(100, "Listo")
         emit_log(f"Salida: {out.file_path}")
 
+        for warning in out.warnings or []:
+            emit_log(f"⚠️  {warning}")
+
         if settings.cleanup_intermediates:
             try:
                 downloaded_path.unlink(missing_ok=True)
@@ -197,4 +210,8 @@ class ReelsPipeline:
             output_path=out.file_path,
             title=dl.original_title,
             hashtags=dl.hashtags,
+            warnings=out.warnings,
+            thumbnail_path=out.thumbnail_path,
+            subtitle_path=subtitle_path,
+            segments=self.subtitler.last_segments,
         )

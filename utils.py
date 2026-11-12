@@ -12,6 +12,7 @@ import subprocess
 import unicodedata
 from datetime import datetime
 from fractions import Fraction
+from functools import lru_cache
 from pathlib import Path
 
 from deps import resolve_binaries
@@ -67,13 +68,68 @@ def validate_tiktok_url(url: str) -> bool:
     Returns:
         True if valid TikTok URL, False otherwise
     """
-    patterns = [
-        r"https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/\d+",
-        r"https?://(?:vm|vt)\.tiktok\.com/[\w]+",
-        r"https?://(?:www\.)?tiktok\.com/t/[\w]+",
-    ]
+    return any(re.match(pattern, url) for pattern in TIKTOK_URL_PATTERNS)
 
-    return any(re.match(pattern, url) for pattern in patterns)
+
+#: Patrones de URL de TikTok soportados.
+TIKTOK_URL_PATTERNS = (
+    r"https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/\d+",
+    r"https?://(?:vm|vt)\.tiktok\.com/[\w]+",
+    r"https?://(?:www\.)?tiktok\.com/t/[\w]+",
+)
+
+#: Patrones de URL de Instagram Reels.
+INSTAGRAM_URL_PATTERNS = (
+    r"https?://(?:www\.)?instagram\.com/reel/[\w-]+",
+    r"https?://(?:www\.)?instagram\.com/reels/[\w-]+",
+    r"https?://(?:www\.)?instagram\.com/p/[\w-]+",
+    r"https?://(?:www\.)?instagram\.com/tv/[\w-]+",
+)
+
+#: Patrones de URL de YouTube Shorts.
+YOUTUBE_URL_PATTERNS = (
+    r"https?://(?:www\.|m\.)?youtube\.com/shorts/[\w-]+",
+    r"https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+",
+    r"https?://youtu\.be/[\w-]+",
+)
+
+#: Todos los patrones soportados, por plataforma.
+SUPPORTED_URL_PATTERNS: dict[str, tuple[str, ...]] = {
+    "tiktok": TIKTOK_URL_PATTERNS,
+    "instagram": INSTAGRAM_URL_PATTERNS,
+    "youtube": YOUTUBE_URL_PATTERNS,
+}
+
+
+def detect_platform(url: str) -> str | None:
+    """
+    Detecta la plataforma de una URL de vídeo.
+
+    Args:
+        url: URL a clasificar
+
+    Returns:
+        "tiktok", "instagram", "youtube" o None si no es soportada
+    """
+    for platform, patterns in SUPPORTED_URL_PATTERNS.items():
+        if any(re.match(pattern, url) for pattern in patterns):
+            return platform
+    return None
+
+
+def validate_video_url(url: str) -> bool:
+    """
+    Valida si la URL apunta a un vídeo de una plataforma soportada.
+
+    Soporta TikTok, Instagram Reels y YouTube Shorts.
+
+    Args:
+        url: URL a validar
+
+    Returns:
+        True si la URL es válida y de una plataforma soportada
+    """
+    return detect_platform(url) is not None
 
 
 def sanitize_filename(filename: str, max_length: int = 50) -> str:
@@ -107,7 +163,14 @@ def sanitize_filename(filename: str, max_length: int = 50) -> str:
     return sanitized or "video"
 
 
+@lru_cache(maxsize=32)
 def ffmpeg_has_filter(filter_name: str) -> bool:
+    """Comprueba si el FFmpeg resuelto incluye un filtro concreto.
+
+    El resultado se cachea: `ffmpeg -filters` tarda ~0.4s y se consulta en
+    cada arranque y en cada inicio de proceso. La caché se invalida con
+    `clear_ffmpeg_filter_cache()` cuando cambia el binario de FFmpeg.
+    """
     try:
         bins = resolve_binaries()
         if not bins.ffmpeg:
@@ -123,6 +186,14 @@ def ffmpeg_has_filter(filter_name: str) -> bool:
         return re.search(rf"\b{re.escape(filter_name)}\b", result.stdout) is not None
     except Exception:
         return False
+
+
+def clear_ffmpeg_filter_cache() -> None:
+    """Invalida la caché de filtros de FFmpeg.
+
+    Debe llamarse cuando el usuario selecciona o instala otro FFmpeg.
+    """
+    ffmpeg_has_filter.cache_clear()
 
 
 def check_ffmpeg_subtitles_support() -> tuple[bool, str]:

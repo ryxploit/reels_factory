@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reels-factory"
-version = "1.2.0"
+version = "1.3.0"
 description = "Descarga de TikTok, procesado a Facebook Reels y subtítulos automáticos con Whisper."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -48,13 +48,26 @@ Homepage = "https://github.com/ryxploit/reels_factory"
 Issues = "https://github.com/ryxploit/reels_factory/issues"
 
 [tool.setuptools]
-# El paquete se llama `reels_factory` (mismo nombre que el repositorio).
-packages = ["reels_factory"]
-package-dir = { "reels_factory" = "." }
+# Layout plano: los módulos viven en la raíz del repositorio y se exponen
+# como módulos de primer nivel (`config`, `app`, `downloader`, ...), que es
+# como los importa el propio proyecto.
+py-modules = [
+    "app",
+    "config",
+    "deps",
+    "downloader",
+    "jobstore",
+    "pipeline",
+    "processor",
+    "settings",
+    "subtitler",
+    "subtitles",
+    "utils",
+    "video_processor",
+]
 
-[tool.setuptools.package-data]
-reels_factory = ["assets/*", "docs/*", "input/*"]
-
+[tool.setuptools.data-files]
+"assets" = ["assets/icon.svg", "assets/logo.svg"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

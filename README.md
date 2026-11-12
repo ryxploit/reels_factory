@@ -13,17 +13,24 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 
 ## ✨ Características
 
-- **📥 Descarga de TikTok** - Sin marca de agua usando yt-dlp  
+- **📥 Descarga multiplataforma** - TikTok, Instagram Reels y YouTube Shorts (sin marca de agua vía yt-dlp)  
 - **🎬 Procesamiento Profesional**
   - Formato 9:16 (1080x1920) para Reels
   - Máximo 55 segundos de duración
   - Reencuadre centrado automático
   - Codec H.264 compatible con Facebook
+  - Normalización de audio a -14 LUFS (estándar de la plataforma)
 - **🔤 Subtítulos Automáticos** - OpenAI Whisper con soporte multiidioma
+  - Resaltado de palabra activa (estilo TikTok/Shorts)
+  - Modelos `turbo` y `large-v3-turbo`: calidad de `large-v3` a mucha mayor velocidad
+  - Exportación a SRT
 - **🏷️ Branding** - Logo PNG en esquina inferior derecha
-- **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso y logs
+- **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas y logs
+- **💾 Preferencias persistentes** - Tus opciones se recuerdan entre sesiones
+- **🔁 Cola persistente** - Reanuda tras un cierre inesperado y reintenta los fallidos
 - **⚡ Optimizado para Apple Silicon** - M1/M2/M3 nativamente
 - **🔧 Modular y escalable** - Código limpio, reutilizable
+- **✅ Verificación del resultado** - Avisa si el vídeo no cumple las specs de la plataforma
 
 ---
 
@@ -154,7 +161,9 @@ python subtitles.py video.mp4 en  # Inglés
 ### Uso como Librería Python
 
 ```python
-from reels_factory import download_tiktok, process_for_reels, generate_subtitles
+from downloader import download_tiktok
+from subtitles import generate_subtitles
+from processor import process_for_reels
 from pathlib import Path
 
 # Descargar
@@ -170,6 +179,10 @@ final = process_for_reels(input_path=video, logo_path=Path("logo.png"), subtitle
 
 print(f"✓ Video listo: {final.file_path}")
 ```
+
+> Tras `pip install -e ".[dev]"` los módulos están disponibles como
+> `config`, `downloader`, `processor`, `subtitles`, `pipeline`, `jobstore`,
+> `settings`, etc.
 
 ---
 
@@ -383,4 +396,4 @@ Para bugs, sugerencias o preguntas:
 
 **Creado con ❤️ por ingenieros de software para creadores de contenido**
 
-v1.2.0 - Production Ready
+v1.3.0 - Production Ready

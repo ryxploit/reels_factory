@@ -5,6 +5,67 @@ Todas las versiones relevantes de ReelsFactoryPro.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el versionado sigue [SemVer](https://semver.org/lang/es/).
 
+## [1.3.0] - 2026-11-12
+
+### Corregido
+
+- **El editable install no funcionaba**: con el layout anterior
+  (`package-dir = {"reels_factory" = "."}`) `pip install -e .` no resolvía
+  ningún módulo, así que `from downloader import ...` fallaba con
+  `ModuleNotFoundError`. Ahora el proyecto usa un layout plano con
+  `py-modules`, y tanto la instalación por wheel como la editable exponen los
+  módulos con los nombres que usa el propio código. Cubierto por tests de
+  empaquetado.
+
+### Añadido
+
+- **Verificación del vídeo final**: tras el render se comprueba que el resultado
+  cumple 1080x1920 y ≤55s. Si no, se muestra un aviso en los logs en lugar de
+  fallar en silencio.
+- **Normalización de audio (loudnorm)**: el audio se normaliza a -14 LUFS
+  (estándar de Facebook/TikTok) para evitar penalizaciones por volumen
+  inconsistente. Se puede desactivar desde la GUI.
+- **Resaltado de palabra activa**: efecto de subtítulos estilo TikTok/Shorts
+  usando las marcas de tiempo por palabra de Whisper. La palabra en curso se
+  resalta y agranda. Desactivable desde la GUI.
+- **Preferencias persistentes**: modelo, idioma, logo, branding y nuevas
+  opciones se guardan con `QSettings` y se restauran al abrir la aplicación.
+- **Cola persistente**: el estado de los trabajos se guarda en
+  `temp/job_queue.json` (escritura atómica). Si la app se cierra a mitad de un
+  lote, se puede continuar.
+- **Reintentar fallidos**: botón que reprocesa únicamente los trabajos que
+  fallaron.
+- **Miniaturas**: se genera una miniatura del vídeo final y se muestra en la
+  columna "Vista" de la cola. Doble clic abre el vídeo con el reproductor del
+  sistema.
+- **Exportar SRT**: exporta los subtítulos del último trabajo a `.srt` sin
+  volver a transcribir.
+- **Más plataformas**: Instagram Reels y YouTube Shorts, además de TikTok.
+  La arquitectura ya lo soportaba; solo faltaba la validación de URLs.
+- **Modelos de Whisper completos**: la GUI ofrece `large-v3`, `large-v3-turbo`
+  y `turbo`. Los modelos turbo tienen calidad de `large-v3` pero son ~4x más
+  rápidos.
+- **Caché de filtros de FFmpeg**: `ffmpeg -filters` tarda ~0.4s y se cachea el
+  resultado. La caché se invalida al cambiar el binario de FFmpeg.
+
+### Cambiado
+
+- `run.sh` y `run.ps1` solo reinstalan las dependencias cuando cambia
+  `requirements.txt` (hash SHA-256). Antes se descargaba torch (~2 GB) en cada
+  arranque.
+- El directorio `packaging/` se renombró a `build_tools/` para no sombrear el
+  paquete `packaging` de PyPI.
+- La tabla de trabajos tiene una columna más ("Vista") y los anchos manuales se
+  aplican después de `resizeColumnsToContents()` (antes se perdían).
+- Los assets (logo, icono) se resuelven junto al ejecutable, no en la carpeta
+  de datos, para que funcionen con `REELSFACTORYPRO_BASE_DIR`.
+
+### Añadido (infraestructura)
+
+- `jobstore.py`: cola persistente con escrituras atómicas.
+- `settings.py`: persistencia de preferencias con `QSettings` y fallback JSON.
+- 37 tests nuevos (80 en total) que cubren las mejoras anteriores.
+
 ## [1.2.0] - 2026-11-12
 
 ### Corregido

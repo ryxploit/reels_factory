@@ -192,7 +192,7 @@ setup_venv_and_python_deps() {
     log "🐍 Creando entorno virtual (.venv)..."
     cd "$SCRIPT_DIR"
     if [ "$py" = "py" ]; then
-      py -3.11 -m venv ".venv"
+      py -3.13 -m venv ".venv"
     else
       "$py" -m venv ".venv"
     fi
@@ -200,8 +200,22 @@ setup_venv_and_python_deps() {
 
   # shellcheck disable=SC1091
   source "$VENV_PATH/bin/activate"
-  "$VENV_PATH/bin/python" -m pip install -U pip
-  "$VENV_PATH/bin/pip" install -r requirements.txt
+
+  # Solo se reinstalan las dependencias si requirements.txt cambió. Sin esto,
+  # cada arranque pagaba la descarga de torch (~2 GB) aunque nada hubiera
+  # cambiado.
+  local req_hash_file="$VENV_PATH/.requirements.sha256"
+  local current_hash
+  current_hash="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
+
+  if [ ! -f "$req_hash_file" ] || [ "$current_hash" != "$(cat "$req_hash_file" 2>/dev/null)" ]; then
+    log "📦 Instalando dependencias Python (requirements.txt cambió)..."
+    "$VENV_PATH/bin/python" -m pip install -U pip
+    "$VENV_PATH/bin/pip" install -r requirements.txt
+    printf '%s' "$current_hash" > "$req_hash_file"
+  else
+    log "✅ Dependencias Python ya instaladas (sin cambios)."
+  fi
 }
 
 verify_runtime_deps() {

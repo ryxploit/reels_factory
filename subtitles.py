@@ -23,12 +23,22 @@ logger = setup_logger("subtitles", config.paths.LOGS_PATH / "subtitles.log")
 
 
 @dataclass
+class SubtitleWord:
+    """Una palabra individual con sus marcas de tiempo (resaltado estilo TikTok)."""
+
+    start: float  # Inicio de la palabra en segundos
+    end: float  # Fin de la palabra en segundos
+    text: str  # Texto de la palabra
+
+
+@dataclass
 class SubtitleSegment:
     """A single subtitle segment."""
 
     start: float  # Start time in seconds
     end: float  # End time in seconds
     text: str  # Subtitle text
+    words: list[SubtitleWord] | None = None  # Palabras con timestamps (opcional)
 
 
 @dataclass
@@ -65,6 +75,8 @@ class SubtitleGenerator:
         self._model = None
         self._model_loaded = False
         self._loaded_model_size: str | None = None
+        # Segmentos de la última transcripción, para exportarlos a SRT.
+        self.last_segments: list[SubtitleSegment] = []
 
     def _load_model(self):
         """Load the Whisper model (lazy loading)."""
@@ -153,6 +165,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """
         Convert subtitle segments to ASS format.
 
+        Si los segmentos incluyen marcas de tiempo por palabra y el resaltado
+        está activo, genera el efecto "palabra activa" (estilo TikTok/Shorts):
+        la palabra que se está pronunciando se muestra en color de destaque
+        y con escala ligeramente mayor.
+
         Args:
             segments: List of subtitle segments
             video_width: Video width
@@ -164,6 +181,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         ass_content = self._create_ass_header(video_width, video_height)
 
         for segment in segments:
+            if self.subtitle_config.ENABLE_WORD_HIGHLIGHT and segment.words:
+                ass_content += self._word_highlight_dialogues(segment)
+                continue
+
             start_time = self._format_ass_time(segment.start)
             end_time = self._format_ass_time(segment.end)
 
@@ -175,6 +196,66 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ass_content += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}\n"
 
         return ass_content
+
+    def _word_highlight_dialogues(self, segment: SubtitleSegment) -> str:
+        """
+        Genera las líneas Dialogue con resaltado de palabra activa.
+
+        Para cada palabra se emite un evento que muestra el texto completo del
+        segmento con esa palabra resaltada. Es la técnica que usan TikTok y
+        YouTube Shorts: el texto completo permanece visible y la palabra en
+        curso cambia de color y crece ligeramente.
+
+        Args:
+            segment: Segmento con marcas de tiempo por palabra
+
+        Returns:
+            Líneas ASS del segmento
+        """
+        cfg = self.subtitle_config
+        words = [w for w in (segment.words or []) if w.text.strip()]
+        if not words:
+            return ""
+
+        # Texto completo del segmento, dividido en palabras con su posición.
+        full_text = segment.text.strip().replace("\n", "\\N")
+
+        # Índice de cada palabra dentro del texto completo, para poder
+        # inyectar las etiquetas de override en la posición correcta.
+        result = ""
+        cursor = 0
+        for i, word in enumerate(words):
+            start_time = self._format_ass_time(word.start)
+            end_time = self._format_ass_time(word.end)
+
+            # Localiza la palabra en el texto a partir del cursor.
+            stripped = word.text.strip()
+            pos = full_text.find(stripped, cursor)
+            if pos == -1:
+                pos = full_text.find(stripped)
+                if pos == -1:
+                    pos = cursor
+            cursor = pos + len(stripped)
+
+            before = full_text[:pos]
+            after = full_text[pos + len(stripped) :]
+
+            override = (
+                f"{{\\c{cfg.HIGHLIGHT_COLOR}"
+                f"\\fscx{cfg.WORD_HIGHLIGHT_SCALE}"
+                f"\\fscy{cfg.WORD_HIGHLIGHT_SCALE}"
+                f"\\b1}}"
+            )
+            reset = "{\\c&HFFFFFF&\\fscx100\\fscy100\\b0}"
+
+            if i == len(words) - 1:
+                # La última palabra dura hasta el final del segmento.
+                end_time = self._format_ass_time(segment.end)
+
+            highlighted = f"{before}{override}{stripped}{reset}{after}"
+            result += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{highlighted}\n"
+
+        return result
 
     def _extract_audio(self, video_path: Path, cancel_event: threading.Event | None = None) -> Path:
         """
@@ -304,6 +385,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 "verbose": False,
             }
 
+            # Los timestamps por palabra habilitan el resaltado estilo TikTok.
+            want_words = self.subtitle_config.ENABLE_WORD_HIGHLIGHT
+            if want_words:
+                transcribe_options["word_timestamps"] = True
+
             if language:
                 transcribe_options["language"] = language
 
@@ -322,9 +408,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             total_segments = len(whisper_segments)
 
             for i, segment in enumerate(whisper_segments):
+                words: list[SubtitleWord] | None = None
+                if want_words:
+                    words = [
+                        SubtitleWord(
+                            start=w.get("start", segment["start"]),
+                            end=w.get("end", segment["end"]),
+                            text=w.get("word", ""),
+                        )
+                        for w in (segment.get("words") or [])
+                        if w.get("word", "").strip()
+                    ]
+                    if not words:
+                        words = None
+
                 segments.append(
                     SubtitleSegment(
-                        start=segment["start"], end=segment["end"], text=segment["text"]
+                        start=segment["start"],
+                        end=segment["end"],
+                        text=segment["text"],
+                        words=words,
                     )
                 )
 
@@ -349,6 +452,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             # Generate ASS content
             ass_content = self._segments_to_ass(segments)
+
+            # Conserva los segmentos para poder exportarlos a SRT más tarde.
+            self.last_segments = segments
 
             # Save subtitle file
             if output_filename:
@@ -399,6 +505,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     audio_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    def export_srt(self, segments: list[SubtitleSegment], output_filename: str) -> Path | None:
+        """
+        Exporta segmentos ya transcritos a un fichero SRT.
+
+        Permite exportar SRT sin volver a transcribir: la GUI guarda los
+        segmentos del último trabajo y ofrece la exportación bajo demanda.
+
+        Args:
+            segments: Segmentos transcritos
+            output_filename: Nombre del fichero de salida
+
+        Returns:
+            Ruta del SRT generado, o None si no se pudo escribir
+        """
+        if not segments:
+            return None
+
+        if not output_filename.endswith(".srt"):
+            output_filename += ".srt"
+
+        try:
+            srt_path = self.output_dir / output_filename
+            srt_path.write_text(self._segments_to_srt(segments), encoding="utf-8")
+            return srt_path
+        except Exception as e:
+            logger.error(f"Could not export SRT: {e}")
+            return None
 
     def generate_srt(
         self,

@@ -38,6 +38,12 @@ class VideoConfig:
     AUDIO_SAMPLE_RATE: int = 44100
     AUDIO_CHANNELS: int = 2
 
+    # Audio normalization (loudnorm) - Facebook/TikTok normalizan a -14 LUFS.
+    ENABLE_LOUDNORM: bool = True
+    LOUDNORM_I: str = "-14"  # Integrated loudness (LUFS)
+    LOUDNORM_TP: str = "-1.5"  # True peak (dBTP)
+    LOUDNORM_LRA: str = "11"  # Loudness range
+
     # Frame rate
     FPS: int = 30
 
@@ -49,12 +55,15 @@ class VideoConfig:
     NOISE_STRENGTH_MIN: int = 1
     NOISE_STRENGTH_MAX: int = 3
 
+    # Verificación del archivo final contra las especificaciones de la plataforma.
+    VALIDATE_OUTPUT: bool = True
+
 
 @dataclass
 class SubtitleConfig:
     """Subtitle generation and styling configuration."""
 
-    MODEL_SIZE: str = "base"  # tiny, base, small, medium, large-v2
+    MODEL_SIZE: str = "base"  # tiny, base, small, medium, large-v3, turbo, ...
     USE_MPS: bool = True
 
     # Subtitle styling (ASS format)
@@ -67,8 +76,21 @@ class SubtitleConfig:
     SHADOW_DEPTH: int = 1
     MARGIN_V: int = 50  # Vertical margin from bottom
 
-    # Word highlighting
+    # Word highlighting (estilo TikTok/Shorts)
     HIGHLIGHT_COLOR: str = "&H00FFFF"  # Yellow (BGR format)
+    ENABLE_WORD_HIGHLIGHT: bool = True
+    WORD_HIGHLIGHT_SCALE: int = 120  # Escala de la palabra activa (ASS \fsc)
+
+    # Modelos disponibles en la interfaz (los que soporta openai-whisper).
+    AVAILABLE_MODELS: tuple[str, ...] = (
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3",
+        "large-v3-turbo",
+        "turbo",
+    )
 
 
 @dataclass
@@ -106,6 +128,7 @@ class PathConfig:
         self.DOWNLOADS_PATH = self.TEMP_PATH / "downloads"
         self.PROCESSED_PATH = self.OUTPUT_PATH
         self.SUBTITLES_PATH = self.TEMP_PATH / "subtitles"
+        self.THUMBNAILS_PATH = self.OUTPUT_PATH / "thumbnails"
 
         # Create directories
         self._create_directories()
@@ -132,6 +155,7 @@ class PathConfig:
             self.INPUT_PATH,
             self.OUTPUT_PATH,
             self.LOGS_PATH,
+            self.THUMBNAILS_PATH,
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -147,7 +171,7 @@ class Config:
 
         # App settings
         self.APP_NAME = "ReelsFactoryPro"
-        self.APP_VERSION = "1.2.0"
+        self.APP_VERSION = "1.3.0"
         self.DEBUG = os.environ.get("REELS_FACTORY_DEBUG", "false").lower() == "true"
 
 

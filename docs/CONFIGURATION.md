@@ -27,14 +27,42 @@ Los valores por defecto viven en `config.py` y se pueden ajustar sin tocar la GU
 | `VideoConfig` | `VIDEO_CODEC` | `libx264` | Codec de video (H.264) |
 | `VideoConfig` | `FPS` | `30` | Fotogramas por segundo |
 | `VideoConfig` | `ENABLE_VARIATIONS` | `True` | Variaciones sutiles de color/ruido |
+| `VideoConfig` | `ENABLE_LOUDNORM` | `True` | Normaliza el audio a -14 LUFS |
+| `VideoConfig` | `LOUDNORM_I` / `TP` / `LRA` | `-14` / `-1.5` / `11` | Parámetros de loudnorm |
+| `VideoConfig` | `VALIDATE_OUTPUT` | `True` | Verifica las specs del vídeo final |
 | `SubtitleConfig` | `MODEL_SIZE` | `base` | Modelo Whisper por defecto |
 | `SubtitleConfig` | `USE_MPS` | `True` | Aceleración por Metal (MPS) en macOS |
 | `SubtitleConfig` | `FONT_NAME` / `FONT_SIZE` | `Arial` / `24` | Tipografía de los subtítulos |
+| `SubtitleConfig` | `ENABLE_WORD_HIGHLIGHT` | `True` | Resaltado de palabra activa |
+| `SubtitleConfig` | `HIGHLIGHT_COLOR` | `&H00FFFF` | Color de la palabra activa |
+| `SubtitleConfig` | `WORD_HIGHLIGHT_SCALE` | `120` | Escala de la palabra activa (ASS `\fsc`) |
+| `SubtitleConfig` | `AVAILABLE_MODELS` | 7 modelos | Modelos ofrecidos en la GUI |
 | `BrandingConfig` | `LOGO_WIDTH` / `LOGO_HEIGHT` | `150` | Tamaño del overlay |
 | `BrandingConfig` | `LOGO_MARGIN_BOTTOM` | `100` | Separación inferior del overlay |
 
 > Nota: el modelo Whisper seleccionado en la GUI tiene prioridad sobre
 > `SubtitleConfig.MODEL_SIZE` para cada trabajo.
+
+## Preferencias de la aplicación
+
+Las opciones que se eligen en la GUI (subtítulos, modelo, idioma, logo,
+branding, limpieza de temporales, resaltado y loudnorm) se guardan
+automáticamente y se restauran al abrir la aplicación.
+
+- macOS: `~/Library/Preferences/com.ReelsFactoryPro.ReelsFactoryPro.plist`
+- Windows: registro de usuario (`HKCU\Software\ReelsFactoryPro\ReelsFactoryPro`)
+
+Si `QSettings` no está disponible, se usa `temp/settings.json` como alternativa.
+
+## Cola persistente
+
+El estado de los trabajos se guarda en `temp/job_queue.json` con escritura
+atómica. Contiene la URL, el estado (`Pendiente`, `En curso`, `Listo`, `Falló`,
+`Cancelado`), el resultado y los metadatos de cada trabajo.
+
+- Al arrancar, los trabajos pendientes o interrumpidos se pueden reintentar.
+- El botón "Reintentar fallidos" reprocesa solo los que fallaron.
+- El fichero se puede borrar sin efecto: se regenera en el siguiente lote.
 
 ## Empaquetado
 

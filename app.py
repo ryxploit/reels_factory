@@ -10,8 +10,8 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QIcon
+from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QFontDatabase, QIcon, QPixmap
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -34,13 +35,18 @@ from PySide6.QtWidgets import (
 )
 
 from config import config
+from jobstore import JobStore, StoredJob
 from pipeline import CancelledError, PipelineSettings, ReelsPipeline
+from settings import AppSettings, SettingsStore
+from subtitles import SubtitleGenerator
 from utils import (
     check_ffmpeg_installed,
     check_ffmpeg_subtitles_support,
     check_yt_dlp_installed,
+    clear_ffmpeg_filter_cache,
+    detect_platform,
     setup_logger,
-    validate_tiktok_url,
+    validate_video_url,
 )
 
 logger = setup_logger("app", config.paths.LOGS_PATH / "app.log")
@@ -54,6 +60,7 @@ class UiJob:
     result: str = ""
     title: str = ""
     hashtags: str = ""
+    thumbnail_path: str = ""
 
 
 class PipelineWorker(QObject):
@@ -62,9 +69,17 @@ class PipelineWorker(QObject):
     job_update = Signal(int, str, int)
     job_done = Signal(int, bool, str)
     job_meta = Signal(int, str, str)
+    job_warning = Signal(int, str)
+    job_thumbnail = Signal(int, str)
+    job_subtitles = Signal(int, str, list)
     finished = Signal()
 
-    def __init__(self, urls: list[str], settings: PipelineSettings):
+    def __init__(
+        self,
+        urls: list[str],
+        settings: PipelineSettings,
+        job_store: JobStore | None = None,
+    ):
         super().__init__()
         """Inicializa el worker de la pipeline.
 
@@ -74,11 +89,13 @@ class PipelineWorker(QObject):
         Parámetros:
         - urls: lista de URLs a procesar.
         - settings: instancia de `PipelineSettings` con las opciones.
+        - job_store: cola persistente donde se refleja el estado de cada trabajo.
         """
         self._urls = urls
         self._settings = settings
         self._cancel_event = threading.Event()
         self._pipeline = ReelsPipeline()
+        self._job_store = job_store
 
     def cancel(self):
         """Solicita la cancelación segura del proceso en curso.
@@ -87,6 +104,11 @@ class PipelineWorker(QObject):
         operaciones de forma ordenada.
         """
         self._cancel_event.set()
+
+    def _persist(self, url: str, **fields) -> None:
+        """Actualiza el estado persistido de un trabajo (si hay cola)."""
+        if self._job_store is not None:
+            self._job_store.update_job(url, **fields)
 
     def run(self):
         """Ejecuta la pipeline para cada URL.
@@ -99,10 +121,12 @@ class PipelineWorker(QObject):
             for idx, url in enumerate(self._urls):
                 if self._cancel_event.is_set():
                     self.job_done.emit(idx, False, "Cancelado")
+                    self._persist(url, status="Cancelado")
                     break
 
                 self.job_update.emit(idx, "En curso", 0)
                 self.log.emit(f"Iniciando job {idx + 1}/{total}")
+                self._persist(url, status="En curso")
 
                 def progress_cb(value: int, status: str, idx: int = idx):
                     self.job_update.emit(idx, status, value)
@@ -122,20 +146,41 @@ class PipelineWorker(QObject):
                     )
                 except CancelledError:
                     self.job_done.emit(idx, False, "Cancelado")
+                    self._persist(url, status="Cancelado")
                     break
                 except Exception as e:
                     self.job_done.emit(idx, False, str(e))
+                    self._persist(url, status="Falló", error_message=str(e))
                     break
 
                 if result.success and result.output_path:
                     self.job_done.emit(idx, True, str(result.output_path))
+                    self._persist(
+                        url,
+                        status="Listo",
+                        result=str(result.output_path),
+                        output_path=str(result.output_path),
+                        error_message="",
+                    )
                 else:
-                    self.job_done.emit(idx, False, result.error_message or "Falló")
+                    message = result.error_message or "Falló"
+                    self.job_done.emit(idx, False, message)
+                    self._persist(url, status="Falló", error_message=message)
+
+                for warning in result.warnings or []:
+                    self.job_warning.emit(idx, warning)
+
+                if result.thumbnail_path:
+                    self.job_thumbnail.emit(idx, str(result.thumbnail_path))
+
+                if result.subtitle_path:
+                    self.job_subtitles.emit(idx, str(result.subtitle_path), result.segments or [])
 
                 title = result.title or ""
                 hashtags = " ".join(result.hashtags or [])
                 if title or hashtags:
                     self.job_meta.emit(idx, title, hashtags)
+                    self._persist(url, title=title, hashtags=hashtags)
 
                 if self._cancel_event.is_set():
                     break
@@ -162,6 +207,10 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: PipelineWorker | None = None
         self._jobs: list[UiJob] = []
+        self._settings_store = SettingsStore()
+        self._job_store = JobStore()
+        # Segmentos del último trabajo con subtítulos, para exportarlos a SRT.
+        self._last_segments: list = []
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -176,10 +225,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(deps)
 
         # Splitter horizontal para columnas izquierda/derecha
-        from PySide6.QtCore import Qt as QtCore_Qt
-        from PySide6.QtWidgets import QSplitter
-
-        main_splitter = QSplitter(QtCore_Qt.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_splitter.setChildrenCollapsible(False)
 
         # Panel izquierdo
@@ -208,7 +254,52 @@ class MainWindow(QMainWindow):
         footer = self._build_footer()
         layout.addWidget(footer)
 
+        self._load_settings()
         self._refresh_deps()
+
+    def closeEvent(self, event):
+        """Guarda las preferencias y la cola antes de cerrar la ventana."""
+        self._save_settings()
+        self._job_store.save()
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Preferencias persistentes
+    # ------------------------------------------------------------------
+
+    def _load_settings(self):
+        """Restaura las preferencias guardadas en los controles de la GUI."""
+        saved = self._settings_store.load()
+
+        self.subtitles_cb.setChecked(saved.subtitles)
+        if saved.whisper_model in [
+            self.model_combo.itemText(i) for i in range(self.model_combo.count())
+        ]:
+            self.model_combo.setCurrentText(saved.whisper_model)
+        self.language_combo.setCurrentText(saved.language if saved.language else "auto")
+        self.branding_cb.setChecked(saved.branding)
+        self.cleanup_cb.setChecked(saved.cleanup_intermediates)
+        self.word_highlight_cb.setChecked(saved.word_highlight)
+        self.loudnorm_cb.setChecked(saved.loudnorm)
+
+        if saved.logo_path and Path(saved.logo_path).exists():
+            self.logo_path_edit.setText(saved.logo_path)
+
+        self._sync_option_states()
+
+    def _save_settings(self):
+        """Guarda el estado actual de los controles como preferencias."""
+        settings = AppSettings(
+            subtitles=self.subtitles_cb.isChecked(),
+            whisper_model=self.model_combo.currentText(),
+            language=self.language_combo.currentData() or "auto",
+            branding=self.branding_cb.isChecked(),
+            logo_path=self.logo_path_edit.text(),
+            cleanup_intermediates=self.cleanup_cb.isChecked(),
+            word_highlight=self.word_highlight_cb.isChecked(),
+            loudnorm=self.loudnorm_cb.isChecked(),
+        )
+        self._settings_store.save(settings)
 
     def _apply_theme(self):
         """Aplica el tema oscuro y las reglas de estilo visual.
@@ -454,9 +545,12 @@ class MainWindow(QMainWindow):
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Modelo"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
-        self.model_combo.setCurrentText("base")
-        self.model_combo.setToolTip("Selecciona el tamaño del modelo de transcripción.")
+        self.model_combo.addItems(list(config.subtitle.AVAILABLE_MODELS))
+        self.model_combo.setCurrentText(config.subtitle.MODEL_SIZE)
+        self.model_combo.setToolTip(
+            "Tamaño del modelo de transcripción. "
+            "'turbo' y 'large-v3-turbo' son tan precisos como 'large-v3' pero mucho más rápidos."
+        )
         model_row.addWidget(self.model_combo)
         model_row.addStretch(1)
 
@@ -469,6 +563,18 @@ class MainWindow(QMainWindow):
         self.language_combo.setToolTip("Define el idioma del audio o usa auto para detectar.")
         lang_row.addWidget(self.language_combo)
         lang_row.addStretch(1)
+
+        self.word_highlight_cb = QCheckBox("Resaltar palabra activa")
+        self.word_highlight_cb.setChecked(config.subtitle.ENABLE_WORD_HIGHLIGHT)
+        self.word_highlight_cb.setToolTip(
+            "Estilo TikTok/Shorts: la palabra que se pronuncia se resalta y agranda."
+        )
+
+        self.loudnorm_cb = QCheckBox("Normalizar audio (-14 LUFS)")
+        self.loudnorm_cb.setChecked(config.video.ENABLE_LOUDNORM)
+        self.loudnorm_cb.setToolTip(
+            "Iguala el volumen al estándar de Facebook/TikTok para evitar penalizaciones."
+        )
 
         self.branding_cb = QCheckBox("Añadir overlay (logo)")
         self.branding_cb.setChecked(False)
@@ -492,6 +598,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.subtitles_cb)
         layout.addLayout(model_row)
         layout.addLayout(lang_row)
+        layout.addWidget(self.word_highlight_cb)
+        layout.addWidget(self.loudnorm_cb)
         layout.addWidget(self.branding_cb)
         layout.addLayout(logo_row)
         layout.addWidget(self.cleanup_cb)
@@ -511,6 +619,7 @@ class MainWindow(QMainWindow):
         subs_enabled = self.subtitles_cb.isChecked()
         self.model_combo.setEnabled(subs_enabled)
         self.language_combo.setEnabled(subs_enabled)
+        self.word_highlight_cb.setEnabled(subs_enabled)
 
         branding_enabled = self.branding_cb.isChecked()
         self.logo_btn.setEnabled(branding_enabled)
@@ -519,27 +628,29 @@ class MainWindow(QMainWindow):
     def _build_jobs_box(self) -> QGroupBox:
         """Construye la tabla que muestra la cola de trabajo y progreso global.
 
-        La tabla contiene columnas para índice, URL, estado, progreso y resultado.
+        La tabla contiene columnas para índice, URL, estado, progreso,
+        miniatura y resultado.
         """
         box = QGroupBox("Cola")
         layout = QVBoxLayout(box)
         layout.setSpacing(8)
 
-        self.jobs_table = QTableWidget(0, 5)
-        self.jobs_table.setHorizontalHeaderLabels(["#", "URL", "Estado", "Progreso", "Resultado"])
+        self.jobs_table = QTableWidget(0, 6)
+        self.jobs_table.setHorizontalHeaderLabels(
+            ["#", "URL", "Estado", "Progreso", "Vista", "Resultado"]
+        )
         self.jobs_table.horizontalHeader().setStretchLastSection(True)
         self.jobs_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.jobs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.jobs_table.setAlternatingRowColors(True)
         self.jobs_table.verticalHeader().setVisible(False)
         self.jobs_table.setMinimumHeight(200)
-        self.jobs_table.setMaximumHeight(280)
-        # Ajustar ancho de columnas
-        self.jobs_table.setColumnWidth(0, 40)
-        self.jobs_table.setColumnWidth(2, 120)
-        self.jobs_table.setColumnWidth(3, 120)
+        self.jobs_table.setMaximumHeight(300)
+        self.jobs_table.setIconSize(QPixmap(54, 96).size())
+        self.jobs_table.setShowGrid(True)
         self.jobs_table.setToolTip("Muestra la cola de trabajos con su estado y resultado.")
         self.jobs_table.itemSelectionChanged.connect(self._on_job_selected)
+        self.jobs_table.cellDoubleClicked.connect(self._on_job_double_clicked)
         layout.addWidget(self.jobs_table)
 
         self.overall_bar = QProgressBar()
@@ -549,6 +660,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.overall_bar)
 
         return box
+
+    def _apply_column_widths(self):
+        """Fija los anchos de columna.
+
+        Debe llamarse DESPUÉS de poblar la tabla: `resizeColumnsToContents()`
+        sobrescribe los anchos manuales.
+        """
+        self.jobs_table.setColumnWidth(0, 40)
+        self.jobs_table.setColumnWidth(2, 120)
+        self.jobs_table.setColumnWidth(3, 120)
+        self.jobs_table.setColumnWidth(4, 70)
 
     def _build_logs_box(self) -> QGroupBox:
         """Construye el área de logs donde se muestran mensajes de proceso."""
@@ -605,6 +727,33 @@ class MainWindow(QMainWindow):
         tags_container.addWidget(self.copy_all_btn)
         layout.addLayout(tags_container)
 
+        # Subtítulos - exportar SRT del último trabajo procesado
+        subs_container = QHBoxLayout()
+        subs_container.setSpacing(8)
+        subs_lbl = QLabel("Subtítulos:")
+        subs_lbl.setFixedWidth(60)
+        subs_lbl.setStyleSheet("color: #94A3B8;")
+        self.subs_edit = QLineEdit()
+        self.subs_edit.setReadOnly(True)
+        self.subs_edit.setPlaceholderText("Ruta del archivo .ass")
+        self.copy_subs_btn = QPushButton("Copiar")
+        self.copy_subs_btn.setObjectName("ghost")
+        self.copy_subs_btn.setFixedSize(70, 32)
+        self.copy_subs_btn.setToolTip("Copia el texto de los subtítulos al portapapeles.")
+        self.copy_subs_btn.clicked.connect(lambda: self._copy_to_clipboard(self.subs_edit.text()))
+        self.export_srt_btn = QPushButton("Exportar SRT")
+        self.export_srt_btn.setObjectName("ghost")
+        self.export_srt_btn.setFixedSize(100, 32)
+        self.export_srt_btn.setToolTip(
+            "Exporta los subtítulos del último trabajo a formato SRT (para YouTube, etc.)."
+        )
+        self.export_srt_btn.clicked.connect(self._export_srt)
+        subs_container.addWidget(subs_lbl)
+        subs_container.addWidget(self.subs_edit, 1)
+        subs_container.addWidget(self.copy_subs_btn)
+        subs_container.addWidget(self.export_srt_btn)
+        layout.addLayout(subs_container)
+
         # Separador
         sep = QWidget()
         sep.setFixedHeight(1)
@@ -624,9 +773,10 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_footer(self) -> QWidget:
-        """Construye el footer con botones de iniciar y cancelar.
+        """Construye el footer con botones de iniciar, cancelar y reintentar.
 
-        Contiene los controles principales para comenzar o detener la ejecución.
+        Contiene los controles principales para comenzar o detener la ejecución,
+        además de la acción para reintentar solo los trabajos fallidos.
         """
         bar = QWidget()
         row = QHBoxLayout(bar)
@@ -642,11 +792,38 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self._cancel)
         self.cancel_btn.setEnabled(False)
 
+        self.retry_btn = QPushButton("Reintentar fallidos")
+        self.retry_btn.setObjectName("ghost")
+        self.retry_btn.setToolTip("Vuelve a procesar únicamente los trabajos que fallaron.")
+        self.retry_btn.clicked.connect(self._retry_failed)
+        self.retry_btn.setEnabled(False)
+
         row.addWidget(self.start_btn)
         row.addWidget(self.cancel_btn)
+        row.addWidget(self.retry_btn)
         row.addStretch(1)
 
         return bar
+
+    def _retry_failed(self):
+        """Reintenta únicamente los trabajos fallidos de la última cola."""
+        self._job_store.load()
+        urls = self._job_store.retryable_urls()
+        if not urls:
+            QMessageBox.information(self, "Reintentar", "No hay trabajos fallidos que reintentar.")
+            return
+
+        # Sustituye las URLs fallidas en el textarea y lanza el proceso.
+        current = self._read_urls()
+        merged = [u for u in current if u not in urls] + urls
+        self.urls_text.setPlainText("\n".join(merged))
+        self._append_log(f"Reintentando {len(urls)} trabajo(s) fallido(s)...")
+        self._start()
+
+    def _update_retry_button(self):
+        """Habilita el botón de reintento si hay trabajos fallidos."""
+        self._job_store.load()
+        self.retry_btn.setEnabled(bool(self._job_store.failed_jobs()))
 
     def _append_log(self, message: str):
         """Añade una línea al registro y la escribe en el logger.
@@ -669,6 +846,36 @@ class MainWindow(QMainWindow):
         tags = self.hashtags_edit.text().strip()
         combined = "\n".join([p for p in [title, tags] if p])
         self._copy_to_clipboard(combined)
+
+    def _export_srt(self):
+        """Exporta los subtítulos del último trabajo a un fichero SRT.
+
+        No requiere volver a transcribir: reutiliza los segmentos ya generados.
+        """
+        if not self._last_segments:
+            QMessageBox.information(
+                self,
+                "Exportar SRT",
+                "No hay subtítulos en memoria. Ejecuta primero un trabajo con subtítulos.",
+            )
+            return
+
+        base = self.subs_edit.text().strip() or "subtitulos"
+        stem = Path(base).stem or "subtitulos"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar SRT", str(config.paths.OUTPUT_PATH / f"{stem}.srt"), "Subtitles (*.srt)"
+        )
+        if not file_path:
+            return
+
+        generator = SubtitleGenerator(config.paths.SUBTITLES_PATH)
+        written = generator.export_srt(self._last_segments, Path(file_path).name)
+        if written:
+            self._append_log(f"SRT exportado: {written}")
+            self.statusBar().showMessage(f"SRT exportado: {written.name}", 4000)
+        else:
+            QMessageBox.warning(self, "Exportar SRT", "No se pudo escribir el fichero SRT.")
 
     def _set_metadata_fields(self, title: str, hashtags: str):
         """Actualiza los campos de metadatos en la UI."""
@@ -858,6 +1065,8 @@ class MainWindow(QMainWindow):
                 os.environ["REELSFACTORYPRO_FFMPEG"] = path
                 self._append_log(f"FFmpeg seleccionado: {path} (no copiado)")
 
+            # El binario cambió: la caché de filtros debe invalidarse.
+            clear_ffmpeg_filter_cache()
             self._refresh_deps()
             dialog.accept()
 
@@ -1206,6 +1415,19 @@ class MainWindow(QMainWindow):
             urls.append(u)
         return urls
 
+    def _platform_summary(self, urls: list[str]) -> str:
+        """Resume cuántas URLs hay de cada plataforma.
+
+        Se usa para informar al usuario de qué se va a procesar.
+        """
+        counts: dict[str, int] = {}
+        for url in urls:
+            platform = detect_platform(url) or "desconocida"
+            counts[platform] = counts.get(platform, 0) + 1
+        if not counts:
+            return ""
+        return ", ".join(f"{count} de {platform}" for platform, count in sorted(counts.items()))
+
     def _populate_table(self, urls: list[str]):
         """Rellena la tabla de trabajos con las URLs proporcionadas.
 
@@ -1224,9 +1446,14 @@ class MainWindow(QMainWindow):
             bar.setTextVisible(True)
             self.jobs_table.setCellWidget(i, 3, bar)
 
-            self.jobs_table.setItem(i, 4, QTableWidgetItem(job.result))
+            # Columna "Vista": miniatura del vídeo final (se rellena al terminar).
+            self.jobs_table.setItem(i, 4, QTableWidgetItem(""))
+
+            self.jobs_table.setItem(i, 5, QTableWidgetItem(job.result))
 
         self.jobs_table.resizeColumnsToContents()
+        # Los anchos manuales deben fijarse DESPUÉS de resizeColumnsToContents().
+        self._apply_column_widths()
         if self._jobs:
             self.jobs_table.selectRow(0)
             self._set_metadata_fields(self._jobs[0].title, self._jobs[0].hashtags)
@@ -1247,6 +1474,20 @@ class MainWindow(QMainWindow):
         if isinstance(bar, QProgressBar):
             bar.setValue(progress)
 
+    def _update_job_thumbnail(self, row: int, thumbnail_path: str):
+        """Muestra la miniatura del vídeo final en la columna 'Vista'."""
+        if row < 0 or row >= len(self._jobs):
+            return
+        self._jobs[row].thumbnail_path = thumbnail_path
+        item = self.jobs_table.item(row, 4)
+        if item is None:
+            return
+        pixmap = QPixmap(thumbnail_path)
+        if pixmap.isNull():
+            return
+        item.setIcon(QIcon(pixmap.scaled(54, 96, Qt.AspectRatioMode.KeepAspectRatio)))
+        item.setText("")
+
     def _update_job_meta(self, row: int, title: str, hashtags: str):
         """Actualiza los metadatos de un trabajo en memoria y UI."""
         if row < 0 or row >= len(self._jobs):
@@ -1264,6 +1505,27 @@ class MainWindow(QMainWindow):
             return
         self._set_metadata_fields(self._jobs[row].title, self._jobs[row].hashtags)
 
+    def _on_job_double_clicked(self, row: int, column: int):
+        """Abre el vídeo final con el reproductor del sistema.
+
+        Permite revisar el resultado antes de subirlo a la plataforma.
+        """
+        if row < 0 or row >= len(self._jobs):
+            return
+        result = self._jobs[row].result
+        path = Path(result) if result else None
+        if not path or not path.exists():
+            QMessageBox.information(
+                self, "Vista previa", "Este trabajo todavía no tiene un vídeo de salida."
+            )
+            return
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.information(self, "Vista previa", f"No se pudo abrir {path}")
+
     def _finish_job_row(self, row: int, ok: bool, message: str):
         """Marca un trabajo como finalizado y escribe el resultado.
 
@@ -1272,7 +1534,7 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self._jobs):
             return
         self._jobs[row].result = message
-        res_item = self.jobs_table.item(row, 4)
+        res_item = self.jobs_table.item(row, 5)
         if res_item:
             res_item.setText(message)
         self._update_job_row(
@@ -1306,9 +1568,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "URLs", "Añade al menos una URL")
             return
 
-        invalid = [u for u in urls if not validate_tiktok_url(u)]
+        invalid = [u for u in urls if not validate_video_url(u)]
         if invalid:
-            QMessageBox.warning(self, "URLs inválidas", "Hay URLs inválidas. Corrige y reintenta.")
+            detail = "\n".join(f"• {u}" for u in invalid[:5])
+            QMessageBox.warning(
+                self,
+                "URLs inválidas",
+                "Estas URLs no son de una plataforma soportada "
+                "(TikTok, Instagram Reels o YouTube Shorts):\n\n" + detail,
+            )
             return
 
         logo_path = Path(self.logo_path_edit.text()) if self.logo_path_edit.text().strip() else None
@@ -1322,6 +1590,14 @@ class MainWindow(QMainWindow):
         self.logs.clear()
         self.overall_bar.setValue(0)
 
+        summary = self._platform_summary(urls)
+        if summary:
+            self._append_log(f"Procesando {len(urls)} URL(s): {summary}")
+
+        # Persiste la cola para poder reanudar tras un cierre inesperado.
+        self._job_store.set_jobs([StoredJob(url=u) for u in urls])
+        self._job_store.save()
+
         settings = PipelineSettings(
             subtitles=self.subtitles_cb.isChecked(),
             whisper_model=self.model_combo.currentText(),
@@ -1329,10 +1605,12 @@ class MainWindow(QMainWindow):
             logo_path=logo_path,
             language=self.language_combo.currentData(),
             cleanup_intermediates=self.cleanup_cb.isChecked(),
+            word_highlight=self.word_highlight_cb.isChecked(),
+            loudnorm=self.loudnorm_cb.isChecked(),
         )
 
         self._thread = QThread()
-        self._worker = PipelineWorker(urls, settings)
+        self._worker = PipelineWorker(urls, settings, self._job_store)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -1341,6 +1619,9 @@ class MainWindow(QMainWindow):
         self._worker.job_update.connect(self._update_job_row)
         self._worker.job_done.connect(self._finish_job_row)
         self._worker.job_meta.connect(self._update_job_meta)
+        self._worker.job_warning.connect(self._on_job_warning)
+        self._worker.job_thumbnail.connect(self._update_job_thumbnail)
+        self._worker.job_subtitles.connect(self._on_job_subtitles)
         self._worker.finished.connect(self._on_finished)
         self._worker.finished.connect(self._thread.quit)
 
@@ -1373,6 +1654,19 @@ class MainWindow(QMainWindow):
         self.overall_bar.setValue(value)
         self.statusBar().showMessage(status)
 
+    def _on_job_warning(self, row: int, message: str):
+        """Muestra un aviso de validación del vídeo en los logs."""
+        self._append_log(f"⚠️  {message}")
+
+    def _on_job_subtitles(self, row: int, subtitle_path: str, segments: list):
+        """Guarda la ruta y los segmentos de subtítulos del trabajo actual.
+
+        Permite exportarlos a SRT más tarde sin volver a transcribir.
+        """
+        self._last_segments = segments or []
+        if row == len(self._jobs) - 1 or self.jobs_table.currentRow() == row:
+            self.subs_edit.setText(subtitle_path)
+
     def _on_finished(self):
         """Restablece la UI al terminar el procesamiento.
 
@@ -1383,6 +1677,7 @@ class MainWindow(QMainWindow):
         self.import_file_btn.setEnabled(True)
         self.clear_urls_btn.setEnabled(True)
         self.statusBar().showMessage("Listo")
+        self._update_retry_button()
 
 
 def main():

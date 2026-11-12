@@ -111,8 +111,20 @@ if (!(Test-Path .venv)) {
 
 .\.venv\Scripts\Activate.ps1
 
-python -m pip install -U pip
-pip install -r requirements.txt
+# Solo se reinstalan las dependencias si requirements.txt cambió. Sin esto,
+# cada arranque pagaba la descarga de torch (~2 GB) aunque nada hubiera
+# cambiado.
+$hashFile = Join-Path $ScriptDir '.venv\.requirements.sha256'
+$currentHash = (Get-FileHash -Path (Join-Path $ScriptDir 'requirements.txt') -Algorithm SHA256).Hash
+
+if (-not (Test-Path $hashFile) -or (Get-Content $hashFile -Raw).Trim() -ne $currentHash) {
+  Write-Step "📦 Instalando dependencias Python (requirements.txt cambió)..."
+  python -m pip install -U pip
+  pip install -r requirements.txt
+  Set-Content -Path $hashFile -Value $currentHash -NoNewline
+} else {
+  Write-Step "✅ Dependencias Python ya instaladas (sin cambios)."
+}
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
   Write-Warn "FFmpeg no está disponible en PATH. Instálalo (choco/winget) o configura REELSFACTORYPRO_FFMPEG."

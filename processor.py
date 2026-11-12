@@ -44,6 +44,8 @@ class ProcessingResult:
     file_path: Path | None
     video_info: dict | None
     error_message: str | None = None
+    warnings: list[str] | None = None
+    thumbnail_path: Path | None = None
 
 
 class VideoProcessor:
@@ -350,6 +352,19 @@ class VideoProcessor:
             ]
         )
 
+        # Normalización de loudness: Facebook/TikTok esperan -14 LUFS.
+        if self.video_config.ENABLE_LOUDNORM:
+            cmd.extend(
+                [
+                    "-af",
+                    (
+                        f"loudnorm=I={self.video_config.LOUDNORM_I}"
+                        f":TP={self.video_config.LOUDNORM_TP}"
+                        f":LRA={self.video_config.LOUDNORM_LRA}"
+                    ),
+                ]
+            )
+
         # Optimize for streaming/upload
         cmd.extend(["-movflags", "+faststart"])
 
@@ -623,7 +638,22 @@ class VideoProcessor:
                 f"({output_info['size_formatted'] if output_info else 'unknown size'})"
             )
 
-            return ProcessingResult(success=True, file_path=output_path, video_info=output_info)
+            # Verifica que el resultado cumple las especificaciones de la
+            # plataforma. Un fallo aquí no invalida el vídeo, pero debe
+            # advertirse al usuario en vez de fallar en silencio.
+            warnings: list[str] = []
+            if self.video_config.VALIDATE_OUTPUT:
+                warnings = self._validate_output(output_info)
+
+            thumbnail_path = self._generate_thumbnail(output_path, output_path)
+
+            return ProcessingResult(
+                success=True,
+                file_path=output_path,
+                video_info=output_info,
+                warnings=warnings,
+                thumbnail_path=thumbnail_path,
+            )
 
         except Exception as e:
             logger.error(f"Processing error: {e}")
@@ -632,6 +662,93 @@ class VideoProcessor:
             )
         finally:
             self._cleanup_temp_artifacts()
+
+    def _validate_output(self, output_info: dict | None) -> list[str]:
+        """Comprueba que el vídeo final cumple las especificaciones.
+
+        Facebook Reels exige 1080x1920 y una duración máxima de 55s. Si el
+        resultado se aparta de esos valores, se devuelve un aviso para que la
+        GUI lo muestre en lugar de fallar en silencio.
+
+        Args:
+            output_info: Metadatos del vídeo de salida
+
+        Returns:
+            Lista de avisos (vacía si todo es correcto)
+        """
+        if not output_info:
+            return ["No se pudieron leer los metadatos del vídeo final."]
+
+        warnings: list[str] = []
+        target_w = self.video_config.WIDTH
+        target_h = self.video_config.HEIGHT
+        max_dur = self.video_config.MAX_DURATION_SECONDS
+
+        width = output_info.get("width", 0)
+        height = output_info.get("height", 0)
+        duration = output_info.get("duration", 0.0)
+
+        if (width, height) != (target_w, target_h):
+            warnings.append(
+                f"El vídeo final es {width}x{height} en lugar de {target_w}x{target_h}."
+            )
+
+        if duration > max_dur + 0.5:
+            warnings.append(
+                f"El vídeo final dura {duration:.1f}s, por encima del máximo de {max_dur}s."
+            )
+
+        if duration <= 0:
+            warnings.append("El vídeo final tiene duración 0s.")
+
+        return warnings
+
+    def _generate_thumbnail(
+        self, video_path: Path, output_path: Path, timestamp: float = 1.0
+    ) -> Path | None:
+        """Genera una miniatura PNG del primer segundo del vídeo.
+
+        Args:
+            video_path: Vídeo de entrada
+            output_path: Vídeo de salida (para derivar el nombre)
+            timestamp: Segundo del que se extrae el fotograma
+
+        Returns:
+            Ruta de la miniatura, o None si no se pudo generar
+        """
+        bins = resolve_binaries()
+        if not bins.ffmpeg:
+            return None
+
+        thumbs_dir = config.paths.THUMBNAILS_PATH
+        thumbs_dir.mkdir(parents=True, exist_ok=True)
+        thumb_path = thumbs_dir / f"{output_path.stem}.jpg"
+
+        cmd = [
+            str(bins.ffmpeg),
+            "-y",
+            "-ss",
+            str(timestamp),
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=270:-2",
+            "-q:v",
+            "3",
+            str(thumb_path),
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and thumb_path.exists():
+                return thumb_path
+            logger.warning(f"Could not generate thumbnail: {result.stderr[-200:]}")
+        except Exception as e:
+            logger.warning(f"Could not generate thumbnail: {e}")
+
+        return None
 
     def _cleanup_temp_artifacts(self):
         """Elimina los archivos temporales creados durante el render."""
