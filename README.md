@@ -25,6 +25,8 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
   - Modelos `turbo` y `large-v3-turbo`: calidad de `large-v3` a mucha mayor velocidad
   - Exportación a SRT
 - **🏷️ Branding** - Logo PNG en esquina inferior derecha
+- **🛡️ Evasión de huella digital** - Altera la huella perceptual de vídeo y audio
+- **🔍 Detección de marca de agua** - Avisa si el vídeo ya trae el logo grabado
 - **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas y logs
 - **💾 Preferencias persistentes** - Tus opciones se recuerdan entre sesiones
 - **🔁 Cola persistente** - Reanuda tras un cierre inesperado y reintenta los fallidos
@@ -159,7 +161,6 @@ python subtitles.py video.mp4 en  # Inglés
 ```
 
 ### Uso como Librería Python
-
 ```python
 from downloader import download_tiktok
 from subtitles import generate_subtitles
@@ -282,6 +283,32 @@ python -c "import whisper; whisper.load_model('base')"
 ✓ **Diseñado para** uso personal, educativo y comercial responsable  
 ✓ **Evita prácticas** que causen strikes o violaciones de copyright  
 
+### Sobre la evasión de huella digital y el borrado de metadatos
+
+Estas funciones existen para un caso de uso concreto y legítimo: **republicar
+tu propio contenido en varias plataformas** (un vídeo que hiciste en TikTok y
+quieres subir también a YouTube Shorts, Reels e Instagram).
+
+- **Borrado de metadatos**: elimina título, autor, comentario, copyright y
+  `creation_time` del contenedor. Es buena práctica siempre: esos datos no
+  aportan nada y exponen información del creator original.
+- **Evasión de huella digital**: altera la huella perceptual para que un
+  reupload no coincida con el original y no dispare un aviso de contenido
+  duplicado.
+- **Detección de marca de agua**: te avisa si el vídeo ya trae el logo de
+  TikTok *grabado en los píxeles*. En ese caso no se puede quitar
+  automáticamente: la única solución es cubrirlo con tu propio overlay.
+
+**No uses estas funciones para republicar material ajeno ni para eludir
+derechos de autor.** Eludir un sistema de derechos de autor puede violar la
+legislación aplicable y los términos de servicio de cada plataforma, con
+independencia de los fines que persigas. Si tienes dudas sobre si puedes
+usar un contenido, compruébalo antes de subirlo.
+
+La forma más eficaz de que tus cuentas no se vean afectadas no es técnica:
+es **publicar con tu propia marca visible** (el overlay de la app), mantener
+un historial consistente y no subir contenido que no sea tuyo.
+
 ---
 
 ## Troubleshooting (errores comunes)
@@ -396,4 +423,4 @@ Para bugs, sugerencias o preguntas:
 
 **Creado con ❤️ por ingenieros de software para creadores de contenido**
 
-v1.3.0 - Production Ready
+v1.4.0 - Production Ready

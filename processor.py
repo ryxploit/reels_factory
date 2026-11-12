@@ -25,6 +25,7 @@ from pathlib import Path
 
 from config import config
 from deps import resolve_binaries
+from evasion import EvasionProfile, build_video_filter_chain, default_profile
 from utils import (
     ProgressCallback,
     check_ffmpeg_subtitles_support,
@@ -46,6 +47,9 @@ class ProcessingResult:
     error_message: str | None = None
     warnings: list[str] | None = None
     thumbnail_path: Path | None = None
+    watermark_detected: bool = False
+    watermark_summary: str | None = None
+    evasion_summary: str | None = None
 
 
 class VideoProcessor:
@@ -72,6 +76,9 @@ class VideoProcessor:
         self.branding_config = config.branding
         # Archivos temporales creados durante el render (se limpian al terminar).
         self._temp_artifacts: list[Path] = []
+        # Evasión de huella digital perceptual.
+        self.evasion_enabled: bool = True
+        self.evasion_profile: EvasionProfile = default_profile()
 
     def _calculate_crop_filter(
         self, input_width: int, input_height: int, target_width: int, target_height: int
@@ -161,6 +168,17 @@ class VideoProcessor:
                 self.video_config.NOISE_STRENGTH_MIN, self.video_config.NOISE_STRENGTH_MAX
             )
             filters.append(f"noise=c0s={noise_strength}:allf=t")
+
+        # 5. Evasión de huella digital perceptual (vídeo).
+        if self.evasion_enabled:
+            filters.extend(
+                build_video_filter_chain(
+                    [],
+                    self.evasion_profile,
+                    target_width,
+                    target_height,
+                )
+            )
 
         # Combine base video filters
         video_filter = ",".join(filters)
@@ -352,18 +370,32 @@ class VideoProcessor:
             ]
         )
 
+        # Orden de los filtros de audio:
+        #   1. Evasión de huella (tono, EQ, dither).
+        #   2. Normalización de loudness al final.
+        #
+        # El orden importa: `loudnorm` resamplea internamente a 192 kHz y, si
+        # se aplica ANTES de `asetrate`, genera un tono espurio grave
+        # (~102 Hz en vez de ~443 Hz) que destruye el audio.
+        audio_filters: list[str] = []
+
+        # Evasión de huella digital de audio: el tono es lo que el hash de
+        # audio de las plataformas detecta; el volumen no.
+        if self.evasion_enabled:
+            audio_filters.extend(
+                self.evasion_profile.audio_filters(self.video_config.AUDIO_SAMPLE_RATE)
+            )
+
         # Normalización de loudness: Facebook/TikTok esperan -14 LUFS.
         if self.video_config.ENABLE_LOUDNORM:
-            cmd.extend(
-                [
-                    "-af",
-                    (
-                        f"loudnorm=I={self.video_config.LOUDNORM_I}"
-                        f":TP={self.video_config.LOUDNORM_TP}"
-                        f":LRA={self.video_config.LOUDNORM_LRA}"
-                    ),
-                ]
+            audio_filters.append(
+                f"loudnorm=I={self.video_config.LOUDNORM_I}"
+                f":TP={self.video_config.LOUDNORM_TP}"
+                f":LRA={self.video_config.LOUDNORM_LRA}"
             )
+
+        if audio_filters:
+            cmd.extend(["-af", ",".join(audio_filters)])
 
         # Optimize for streaming/upload
         cmd.extend(["-movflags", "+faststart"])
@@ -493,6 +525,22 @@ class VideoProcessor:
             f"({video_info['width']}x{video_info['height']}, "
             f"{video_info['duration_formatted']})"
         )
+
+        # Detecta marcas de agua incrustadas en los píxeles (no en los
+        # metadatos). Es un aviso: el render continúa, pero el usuario sabe
+        # que la marca viene grabada en el vídeo.
+        watermark_report = None
+        if config.fingerprint.DETECT_WATERMARK:
+            try:
+                from watermark import detect_watermark
+
+                watermark_report = detect_watermark(
+                    input_path, threshold=config.fingerprint.WATERMARK_THRESHOLD
+                )
+                if watermark_report.detected:
+                    logger.warning(f"Watermark detected: {watermark_report.summary}")
+            except Exception as e:  # pragma: no cover - no debe romper el render
+                logger.warning(f"Could not analyze watermark: {e}")
 
         if subtitle_path and subtitle_path.exists():
             ok, msg = check_ffmpeg_subtitles_support()
@@ -645,7 +693,16 @@ class VideoProcessor:
             if self.video_config.VALIDATE_OUTPUT:
                 warnings = self._validate_output(output_info)
 
+            if watermark_report and watermark_report.detected:
+                warnings.append(
+                    "Se detectó una marca de agua incrustada en los píxeles: "
+                    f"{watermark_report.summary}. Esta marca NO se puede quitar "
+                    "automáticamente; conviene cubrirla con tu overlay."
+                )
+
             thumbnail_path = self._generate_thumbnail(output_path, output_path)
+
+            evasion_summary = self.evasion_profile.summary() if self.evasion_enabled else None
 
             return ProcessingResult(
                 success=True,
@@ -653,6 +710,9 @@ class VideoProcessor:
                 video_info=output_info,
                 warnings=warnings,
                 thumbnail_path=thumbnail_path,
+                watermark_detected=bool(watermark_report and watermark_report.detected),
+                watermark_summary=watermark_report.summary if watermark_report else None,
+                evasion_summary=evasion_summary,
             )
 
         except Exception as e:

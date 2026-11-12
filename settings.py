@@ -40,6 +40,7 @@ class AppSettings:
     cleanup_intermediates: bool = False
     word_highlight: bool = True
     loudnorm: bool = True
+    evasion: bool = True
     output_dir: str = ""
 
     @classmethod

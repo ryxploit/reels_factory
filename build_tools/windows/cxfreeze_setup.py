@@ -35,7 +35,7 @@ build_exe_options = {
 
 setup(
     name="ReelsFactoryPro",
-    version="1.3.0",
+    version="1.4.0",
     description="ReelsFactoryPro",
     options={
         "build_exe": build_exe_options,

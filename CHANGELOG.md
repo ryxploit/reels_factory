@@ -5,6 +5,45 @@ Todas las versiones relevantes de ReelsFactoryPro.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el versionado sigue [SemVer](https://semver.org/lang/es/).
 
+## [1.4.0] - 2026-11-12
+
+### Añadido
+
+- **Evasión de huella digital perceptual** (`evasion.py`): altera la huella del
+  vídeo y del audio para que un reupload no coincida con el original. Las
+  plataformas comparan vídeo y audio por separado contra catálogos de obras
+  registradas, así que hay que modificar ambos:
+  - Vídeo: micro-desplazamiento de encuadre (recorte 2px y reescalado),
+    cambio de velocidad del 0.4% (`setpts`) y desplazamiento de gamma.
+  - Audio: cambio de tono del 0.8% (`asetrate` + `atempo` compensado),
+    ecualización suave y dither.
+  - El espejo horizontal queda disponible pero **desactivado** por defecto
+    porque invierte el texto de los subtítulos.
+- **Detección de marca de agua incrustada** (`watermark.py`): analiza los
+  píxeles del vídeo en busca de una capa de overlay (el logo de TikTok
+  grabado en el vídeo, no en los metadatos). El criterio es que los píxeles
+  de la marca **nunca** cambian, a diferencia del contenido real, y se
+  compara cada zona con su entorno inmediato para descartar zonas muertas
+  de la escena. Botón "Analizar marca de agua" en la GUI.
+- Aviso en los logs cuando el render detecta una marca de agua, explicando
+  que solo se puede cubrir con el overlay.
+
+### Corregido
+
+- **El audio se rompía al combinar evasión y loudnorm**: `loudnorm` resamplea
+  internamente a 192 kHz y, aplicado antes de `asetrate`, generaba un tono
+  espurio grave (~102 Hz en vez de ~443 Hz). El orden de los filtros de
+  audio se invierte: evasión primero, loudnorm al final. Verificado: el
+  tono final es 443 Hz y el loudness sigue en -14.0 LUFS.
+
+### Cambiado
+
+- `FingerprintConfig` en `config.py` agrupa los parámetros de evasión.
+- Nueva opción "Evasión de huella digital" en la GUI, persistente entre
+  sesiones.
+- 17 tests nuevos (114 en total), incluidos los de detección de marca de
+  agua con vídeos sintéticos con y sin marca.
+
 ## [1.3.0] - 2026-11-12
 
 ### Corregido

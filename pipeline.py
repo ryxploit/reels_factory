@@ -30,6 +30,7 @@ class PipelineSettings:
     cleanup_intermediates: bool = False
     word_highlight: bool = True
     loudnorm: bool = True
+    evasion: bool = True
 
 
 class CancelledError(Exception):
@@ -49,6 +50,9 @@ class JobResult:
     thumbnail_path: Path | None = None
     subtitle_path: Path | None = None
     segments: list | None = None
+    watermark_detected: bool = False
+    watermark_summary: str | None = None
+    evasion_summary: str | None = None
 
 
 class ReelsPipeline:
@@ -168,6 +172,8 @@ class ReelsPipeline:
         logo_path = settings.logo_path if settings.branding else None
         # La normalización de audio se controla por trabajo.
         self.processor.video_config.ENABLE_LOUDNORM = settings.loudnorm
+        # La evasión de huella digital se controla por trabajo.
+        self.processor.evasion_enabled = settings.evasion
         out = self.processor.process(
             input_path=downloaded_path,
             logo_path=logo_path,
@@ -192,6 +198,9 @@ class ReelsPipeline:
         for warning in out.warnings or []:
             emit_log(f"⚠️  {warning}")
 
+        if out.evasion_summary:
+            emit_log(f"Evasión aplicada: {out.evasion_summary}")
+
         if settings.cleanup_intermediates:
             try:
                 downloaded_path.unlink(missing_ok=True)
@@ -214,4 +223,7 @@ class ReelsPipeline:
             thumbnail_path=out.thumbnail_path,
             subtitle_path=subtitle_path,
             segments=self.subtitler.last_segments,
+            watermark_detected=out.watermark_detected,
+            watermark_summary=out.watermark_summary,
+            evasion_summary=out.evasion_summary,
         )

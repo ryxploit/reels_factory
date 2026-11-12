@@ -23,7 +23,7 @@ def test_pyproject_declares_version_and_dependencies():
     data = _load_pyproject()
     project = data["project"]
     assert project["name"] == "reels-factory"
-    assert project["version"] == "1.3.0"
+    assert project["version"] == "1.4.0"
     assert project["requires-python"] == ">=3.11"
 
     deps = " ".join(project["dependencies"])
@@ -46,6 +46,7 @@ def test_pyproject_exposes_all_modules():
         "config",
         "deps",
         "downloader",
+        "evasion",
         "jobstore",
         "pipeline",
         "processor",
@@ -54,6 +55,7 @@ def test_pyproject_exposes_all_modules():
         "subtitles",
         "utils",
         "video_processor",
+        "watermark",
     }
     assert expected <= modules, f"Faltan módulos: {expected - modules}"
 
@@ -82,7 +84,7 @@ def test_modules_are_importable_by_their_flat_names():
         timeout=120,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "1.3.0"
+    assert result.stdout.strip() == "1.4.0"
 
 
 @pytest.mark.parametrize(
@@ -92,6 +94,7 @@ def test_modules_are_importable_by_their_flat_names():
         "config",
         "deps",
         "downloader",
+        "evasion",
         "jobstore",
         "pipeline",
         "processor",
@@ -100,6 +103,7 @@ def test_modules_are_importable_by_their_flat_names():
         "subtitles",
         "utils",
         "video_processor",
+        "watermark",
     ],
 )
 def test_each_module_compiles(module):

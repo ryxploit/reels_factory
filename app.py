@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.cleanup_cb.setChecked(saved.cleanup_intermediates)
         self.word_highlight_cb.setChecked(saved.word_highlight)
         self.loudnorm_cb.setChecked(saved.loudnorm)
+        self.evasion_cb.setChecked(saved.evasion)
 
         if saved.logo_path and Path(saved.logo_path).exists():
             self.logo_path_edit.setText(saved.logo_path)
@@ -298,6 +299,7 @@ class MainWindow(QMainWindow):
             cleanup_intermediates=self.cleanup_cb.isChecked(),
             word_highlight=self.word_highlight_cb.isChecked(),
             loudnorm=self.loudnorm_cb.isChecked(),
+            evasion=self.evasion_cb.isChecked(),
         )
         self._settings_store.save(settings)
 
@@ -576,6 +578,26 @@ class MainWindow(QMainWindow):
             "Iguala el volumen al estándar de Facebook/TikTok para evitar penalizaciones."
         )
 
+        self.evasion_cb = QCheckBox("Evasión de huella digital")
+        self.evasion_cb.setChecked(config.fingerprint.ENABLE_FRAME_SHIFT)
+        self.evasion_cb.setToolTip(
+            "Altera la huella perceptual del vídeo y del audio para que un "
+            "reupload no coincida con el original. Úsalo al republicar tu "
+            "propio contenido en varias plataformas."
+        )
+
+        self.analyze_btn = QPushButton("Analizar marca de agua")
+        self.analyze_btn.setObjectName("ghost")
+        self.analyze_btn.setToolTip(
+            "Analiza el vídeo descargado en busca de marcas de agua incrustadas "
+            "en los píxeles (no en los metadatos)."
+        )
+        self.analyze_btn.clicked.connect(self._analyze_watermark)
+        analyze_row = QHBoxLayout()
+        analyze_row.addWidget(self.evasion_cb)
+        analyze_row.addStretch(1)
+        analyze_row.addWidget(self.analyze_btn)
+
         self.branding_cb = QCheckBox("Añadir overlay (logo)")
         self.branding_cb.setChecked(False)
         self.branding_cb.setToolTip("Coloca tu logo como overlay en el video final.")
@@ -600,6 +622,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(lang_row)
         layout.addWidget(self.word_highlight_cb)
         layout.addWidget(self.loudnorm_cb)
+        layout.addLayout(analyze_row)
         layout.addWidget(self.branding_cb)
         layout.addLayout(logo_row)
         layout.addWidget(self.cleanup_cb)
@@ -832,6 +855,57 @@ class MainWindow(QMainWindow):
         """
         self.logs.append(message)
         logger.info(message)
+
+    def _analyze_watermark(self):
+        """Analiza en busca de marcas de agua incrustadas en los píxeles.
+
+        Solo analiza el vídeo ya descargado más reciente. Si no hay ninguno,
+        avisa de que primero hay que procesar.
+        """
+        downloaded = sorted(
+            config.paths.DOWNLOADS_PATH.glob("*.mp4"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not downloaded:
+            QMessageBox.information(
+                self,
+                "Analizar marca de agua",
+                "No hay vídeos descargados todavía.\n\n"
+                "Descarga primero un vídeo (procesa una URL) y vuelve a pulsar "
+                "este botón para analizarlo.",
+            )
+            return
+
+        video = downloaded[0]
+        self._append_log(f"Analizando {video.name} en busca de marca de agua...")
+
+        from watermark import detect_watermark
+
+        report = detect_watermark(video, threshold=config.fingerprint.WATERMARK_THRESHOLD)
+
+        if report.error:
+            self._append_log(f"Análisis no disponible: {report.error}")
+            QMessageBox.warning(self, "Analizar marca de agua", report.summary)
+            return
+
+        if report.detected:
+            self._append_log(f"⚠️  {report.summary}")
+            QMessageBox.warning(
+                self,
+                "Marca de agua detectada",
+                f"{report.summary}\n\n"
+                "La marca está grabada en los píxeles del vídeo, no en los "
+                "metadatos. Borrar metadatos no la elimina.\n\n"
+                "Recomendación: cúbrela con tu propio overlay de marca.",
+            )
+        else:
+            self._append_log(f"✓ {report.summary}")
+            QMessageBox.information(
+                self,
+                "Análisis completado",
+                f"{report.summary}\n\n(Se analizaron {report.frames_analyzed} fotogramas)",
+            )
 
     def _copy_to_clipboard(self, text: str):
         """Copia texto al portapapeles y muestra estado."""
@@ -1607,6 +1681,7 @@ class MainWindow(QMainWindow):
             cleanup_intermediates=self.cleanup_cb.isChecked(),
             word_highlight=self.word_highlight_cb.isChecked(),
             loudnorm=self.loudnorm_cb.isChecked(),
+            evasion=self.evasion_cb.isChecked(),
         )
 
         self._thread = QThread()

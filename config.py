@@ -106,6 +106,40 @@ class BrandingConfig:
 
 
 @dataclass
+class FingerprintConfig:
+    """Evasión de huella digital perceptual.
+
+    Las plataformas comparan vídeos y audios re-codificados contra catálogos
+    de obras registradas mediante hashes perceptuales. Estas técnicas alteran
+    la huella del resultado para que un reupload no coincida exactamente con
+    el original.
+
+    Pensado para republicar contenido propio en varias plataformas.
+    """
+
+    # Vídeo
+    ENABLE_FRAME_SHIFT: bool = True
+    ENABLE_SPEED_CHANGE: bool = True
+    ENABLE_GAMMA_SHIFT: bool = True
+    ENABLE_MIRROR: bool = False
+
+    # Audio
+    ENABLE_PITCH_SHIFT: bool = True
+    ENABLE_AUDIO_EQ: bool = True
+    ENABLE_AUDIO_DITHER: bool = True
+
+    # Parámetros
+    SPEED_FACTOR: float = 1.004
+    PITCH_FACTOR: float = 1.008
+    GAMMA: float = 1.03
+    FRAME_SHIFT_PX: int = 2
+
+    # Detección de marca de agua incrustada
+    DETECT_WATERMARK: bool = True
+    WATERMARK_THRESHOLD: float = 0.55
+
+
+@dataclass
 class PathConfig:
     """Project paths configuration."""
 
@@ -167,11 +201,12 @@ class Config:
         self.video = VideoConfig()
         self.subtitle = SubtitleConfig()
         self.branding = BrandingConfig()
+        self.fingerprint = FingerprintConfig()
         self.paths = PathConfig(base_path)
 
         # App settings
         self.APP_NAME = "ReelsFactoryPro"
-        self.APP_VERSION = "1.3.0"
+        self.APP_VERSION = "1.4.0"
         self.DEBUG = os.environ.get("REELS_FACTORY_DEBUG", "false").lower() == "true"
 
 

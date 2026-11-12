@@ -68,8 +68,15 @@ def test_encoding_settings_include_loudnorm(tmp_path):
 
 
 def test_loudnorm_can_be_disabled(tmp_path, monkeypatch):
+    """Al desactivar loudnorm, el filtro de audio ya no incluye la normalización.
+
+    El filtro `-af` puede seguir presente por la evasión de audio, pero sin
+    `loudnorm`.
+    """
     processor = VideoProcessor(output_dir=tmp_path / "out", temp_dir=tmp_path / "tmp")
     monkeypatch.setattr(processor.video_config, "ENABLE_LOUDNORM", False)
+    processor.evasion_enabled = False
+
     opts = processor._add_encoding_settings()
     assert "-af" not in opts
 
