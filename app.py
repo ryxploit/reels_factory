@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -891,21 +893,62 @@ class MainWindow(QMainWindow):
 
         if report.detected:
             self._append_log(f"⚠️  {report.summary}")
-            QMessageBox.warning(
-                self,
-                "Marca de agua detectada",
-                f"{report.summary}\n\n"
-                "La marca está grabada en los píxeles del vídeo, no en los "
-                "metadatos. Borrar metadatos no la elimina.\n\n"
-                "Recomendación: cúbrela con tu propio overlay de marca.",
-            )
+            self._show_watermark_preview(report)
         else:
             self._append_log(f"✓ {report.summary}")
             QMessageBox.information(
                 self,
                 "Análisis completado",
-                f"{report.summary}\n\n(Se analizaron {report.frames_analyzed} fotogramas)",
+                f"{report.summary}\n\n(Se analizaron {report.frames_analyzed} fotogramas)\n\n"
+                "Recuerda revisar el primer fotograma: si el vídeo traía el logo "
+                "de la plataforma original grabado, conviene cubrirlo con tu overlay.",
             )
+
+    def _show_watermark_preview(self, report):
+        """Muestra el fotograma con la zona sospechosa resaltada.
+
+        La detección es heurística: una interfaz estática de una app o el
+        borde de un filtro tienen la misma firma temporal que un logo
+        grabado. Por eso se muestra la imagen para que el usuario confirme
+        de un vistazo.
+        """
+        from PySide6.QtGui import QPixmap
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Posible marca de agua")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+
+        info = QLabel(
+            f"{report.summary}\n\n"
+            "Comprueba la zona marcada: si es el logo de la plataforma "
+            "original, queda grabada en los píxeles y solo puedes cubrirla "
+            "con tu propio overlay."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        if report.preview_path and Path(report.preview_path).exists():
+            label = QLabel()
+            pixmap = QPixmap(str(report.preview_path))
+            if not pixmap.isNull():
+                label.setPixmap(
+                    pixmap.scaled(
+                        420,
+                        720,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            layout.addWidget(label)
+
+        buttons = QDialogButtonBox()
+        buttons.addButton(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
 
     def _copy_to_clipboard(self, text: str):
         """Copia texto al portapapeles y muestra estado."""

@@ -40,7 +40,7 @@ def test_assets_path_follows_program_not_base_dir(tmp_path, monkeypatch):
 
 def test_config_version_is_consistent():
     cfg = Config()
-    assert cfg.APP_VERSION == "1.4.0"
+    assert cfg.APP_VERSION == "1.4.1"
     assert cfg.APP_NAME == "ReelsFactoryPro"
 
 

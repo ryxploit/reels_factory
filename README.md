@@ -26,7 +26,7 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
   - Exportación a SRT
 - **🏷️ Branding** - Logo PNG en esquina inferior derecha
 - **🛡️ Evasión de huella digital** - Altera la huella perceptual de vídeo y audio
-- **🔍 Detección de marca de agua** - Avisa si el vídeo ya trae el logo grabado
+- **🔍 Detección de marca de agua** - Te muestra la zona sospechosa para confirmarla
 - **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas y logs
 - **💾 Preferencias persistentes** - Tus opciones se recuerdan entre sesiones
 - **🔁 Cola persistente** - Reanuda tras un cierre inesperado y reintenta los fallidos
@@ -298,6 +298,9 @@ quieres subir también a YouTube Shorts, Reels e Instagram).
 - **Detección de marca de agua**: te avisa si el vídeo ya trae el logo de
   TikTok *grabado en los píxeles*. En ese caso no se puede quitar
   automáticamente: la única solución es cubrirlo con tu propio overlay.
+  La herramienta genera un **preview con la zona marcada** para que la
+  confirmes de un vistazo: la detección es heurística y una interfaz estática
+  de una app (o el borde de un filtro) tiene la misma firma que un logo.
 
 **No uses estas funciones para republicar material ajeno ni para eludir
 derechos de autor.** Eludir un sistema de derechos de autor puede violar la
@@ -335,6 +338,20 @@ TikTok cambia con frecuencia; mantener `yt-dlp` actualizado suele resolverlo.
 ### Whisper muy lento
 - Usa un modelo menor (`tiny` o `base`).
 - Verifica que MPS esté disponible con el comando de comprobación.
+- `turbo` y `large-v3-turbo` son mucho más rápidos que `large-v3` con calidad
+  equivalente.
+
+### Los subtítulos fallan en Apple Silicon
+Si ves `Cannot convert a MPS Tensor to float64 dtype`, la versión instalada de
+`openai-whisper` no es compatible con el framework de Metal. Actualiza:
+
+```bash
+pip install --upgrade openai-whisper
+```
+
+La app incluye un parche que evita el problema (mueve el tensor a CPU antes
+de la conversión) y, si aun así fallara, reintenta automáticamente en CPU en
+lugar de abortar el trabajo.
 
 ### "Virtual environment not found"
 ```bash
@@ -423,4 +440,4 @@ Para bugs, sugerencias o preguntas:
 
 **Creado con ❤️ por ingenieros de software para creadores de contenido**
 
-v1.4.0 - Production Ready
+v1.4.1 - Production Ready

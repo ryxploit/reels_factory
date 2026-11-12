@@ -5,6 +5,40 @@ Todas las versiones relevantes de ReelsFactoryPro.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el versionado sigue [SemVer](https://semver.org/lang/es/).
 
+## [1.4.1] - 2026-11-12
+
+### Corregido
+
+- **Whisper fallaba en Apple Silicon (MPS)** al activar el resaltado de
+  palabra: `whisper.timing.dtw` convierte la matriz de alineación a float64
+  con `.double()` y el framework de Metal no soporta float64, así que la
+  transcripción moría con:
+  `Cannot convert a MPS Tensor to float64 dtype`.
+  Se parchea el DTW para que mueva el tensor a CPU antes de convertirlo, y
+  también los filtros mel (`whisper.audio.mel_filters`, que son float64).
+  Verificado con un vídeo real de TikTok: la transcripción corre **en MPS**.
+- **Plan B**: si la transcripción falla en MPS por cualquier motivo, se
+  reintenta automáticamente en CPU en lugar de abortar el trabajo.
+- **El nombre del archivo de salida** ya no incluye el título del vídeo
+  original. El nombre acababa visible al subirlo a la plataforma, y arrastraba
+  los hashtags del creator (`reel_monkey_funny_fyp_...mp4`). Ahora es neutro
+  (`reel_20261112_162351.mp4`).
+
+### Cambiado
+
+- La detección de zonas fijas se reescribe con un escaneo de ventanas
+  deslizantes sobre numpy, en lugar de comparar zonas fijas entre sí. Ahora
+  genera un **preview con la zona marcada** para que el usuario confirme de un
+  vistazo si es un logo grabado o un elemento fijo de la escena (una interfaz
+  estática de una app, el borde de un filtro).
+- El umbral de detección se calibra con vídeos reales de TikTok: 0 falsos
+  positivos en los vídeos limpios y detección correcta cuando se inserta un
+  logo.
+
+### Añadido
+
+- 8 tests nuevos (123 en total) para el parche de MPS y el detector.
+
 ## [1.4.0] - 2026-11-12
 
 ### Añadido

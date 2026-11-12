@@ -8,18 +8,28 @@ yt-dlp), el logo queda *grabado en el vídeo* como una capa de píxeles. En ese
 caso borrar los metadatos del contenedor no sirve de nada: la marca sigue ahí
 y las plataformas la detectan visualmente.
 
-El detector busca la firma de una **capa de overlay**: una zona rectangular
-pequeña que permanece idéntica durante todo el vídeo mientras el contenido
-que la rodea se mueve.
+El detector busca la firma de una **capa de overlay**, que tiene dos señales
+simultáneas:
 
-Para no confundirse con zonas simplemente inactivas (un fondo negro, una
-pared lisa), cada zona candidata se compara con una **franja de referencia**
-contigua:
+1. **Quietud temporal**: los píxeles de la marca apenas cambian entre
+   fotogramas consecutivos, mientras que el contenido que la rodea se mueve.
+2. **Bordes definidos**: un logo tiene formas y texto con contornos nítidos,
+   a diferencia de una zona muerta de la escena (un fondo negro, una pared)
+   que es completamente plana.
 
-- Si la zona está quieta **y** su vecina se mueve mucho → hay una capa fija
-  encima de una escena en movimiento. Es la firma de una marca de agua.
-- Si la zona y su vecina están igual de quietas → es una zona muerta de la
-  escena, no un overlay.
+El producto de ambas señales discrimina los tres casos posibles:
+
+============================  ==================  ==================
+Caso                          Quietud             Bordes
+============================  ==================  ==================
+Marca de agua (overlay)       alta                altos
+Zona muerta de la escena      alta                nulos
+Contenido normal              baja                cualesquiera
+============================  ==================  ==================
+
+En lugar de mirar zonas fijas, se recorre una rejilla de ventanas sobre las
+bandas donde las apps colocan su logo (esquinas y bordes superiores e
+inferiores) y se reporta la ventana más sospechosa.
 
 Este módulo es una **herramienta de aviso**, no un detector infalible: un
 vídeo con poca movementación puede dar falsos negativos. Por eso el
@@ -29,24 +39,37 @@ resultado siempre se acompaña de una confianza y el usuario decide.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 from deps import resolve_binaries
 
 
 @dataclass
 class WatermarkRegion:
-    """Zona suspecta detectada en el vídeo."""
+    """Zona suspecta detectada en el vídeo.
 
-    name: str  # "esquina inferior izquierda", "borde superior", ...
+    Las coordenadas están expresadas en píxeles del vídeo original, para
+    poder dibujar el recuadro sobre un fotograma y que el usuario confirme
+    visualmente si es una marca de agua o un elemento fijo de la escena.
+    """
+
+    name: str
     x: int
     y: int
     width: int
     height: int
     score: float  # 0.0 - 1.0, mayor = más sospechoso
-    stability: float  # cuánto más quieta está la zona que su entorno
-    edge_density: float
+    stillness: float  # proporción de píxeles quietos en la zona
+    edge_density: float  # densidad de bordes en la zona
+
+    @property
+    def center(self) -> tuple[int, int]:
+        """Centro de la zona."""
+        return (self.x + self.width // 2, self.y + self.height // 2)
 
 
 @dataclass
@@ -58,6 +81,9 @@ class WatermarkReport:
     regions: list[WatermarkRegion] = field(default_factory=list)
     frames_analyzed: int = 0
     error: str | None = None
+    preview_path: Path | None = None
+    """Ruta de una imagen con la zona sospechosa resaltada, para que el
+    usuario pueda confirmarla de un vistazo."""
 
     @property
     def summary(self) -> str:
@@ -65,33 +91,61 @@ class WatermarkReport:
         if self.error:
             return f"Análisis no disponible: {self.error}"
         if not self.detected:
-            return "No se detectaron marcas de agua incrustadas."
+            return "No se detectaron zonas fijas sospechosas."
 
         zones = ", ".join(
             f"{r.name} ({r.score:.0%})" for r in sorted(self.regions, key=lambda r: -r.score)[:3]
         )
-        return f"Marca de agua detectada (confianza {self.confidence:.0%}). Zonas: {zones}"
+        return (
+            f"Posible marca de agua o elemento fijo (confianza {self.confidence:.0%}). "
+            f"Zonas: {zones}"
+        )
 
 
-#: Zonas donde las apps sociales suelen colocar su marca de agua.
-#: Formato: (nombre, x_rel, y_rel, ancho_rel, alto_rel) en fracciones 0-1.
-#: Las zonas pequeñas son las más frecuentes para el logo.
-CANDIDATE_ZONES: tuple[tuple[str, float, float, float, float], ...] = (
-    ("esquina inferior izquierda (media)", 0.00, 0.88, 0.13, 0.11),
-    ("esquina inferior derecha (media)", 0.87, 0.88, 0.13, 0.11),
-    ("esquina inferior izquierda", 0.00, 0.86, 0.22, 0.14),
-    ("esquina inferior derecha", 0.78, 0.86, 0.22, 0.14),
-    ("esquina superior izquierda (media)", 0.00, 0.00, 0.13, 0.10),
-    ("esquina superior derecha (media)", 0.87, 0.00, 0.13, 0.10),
-    ("esquina superior izquierda", 0.00, 0.00, 0.22, 0.12),
-    ("esquina superior derecha", 0.78, 0.00, 0.22, 0.12),
-    ("borde inferior centro", 0.38, 0.90, 0.24, 0.10),
-    ("borde superior centro", 0.38, 0.00, 0.24, 0.10),
-)
-
-#: Ancho y alto de los fotogramas analizados (escalados para ir rápido).
+#: Tamaño de los fotogramas analizados (escalados para ir rápido).
 FRAME_WIDTH = 160
 FRAME_HEIGHT = 284
+
+#: Bandas donde las apps sociales colocan su marca de agua (fracción Y).
+SCAN_BANDS: tuple[tuple[str, float, float], ...] = (
+    ("borde inferior", 0.72, 1.00),
+    ("borde superior", 0.00, 0.28),
+)
+
+#: Tamaño de la ventana deslizante (fracciones del ancho/alto del fotograma).
+#:
+#: Se usa un único tamaño: uno mayor captura mejor el logo de las apps pero
+#: genera menos falsos positivos. Con una ventana pequeña, una interfaz
+#: estática de una app (botones de Google Maps, por ejemplo) se confunde
+#: con un logo grabado.
+WINDOW_W = 0.16
+WINDOW_H = 0.10
+WINDOW_STEP = 0.04
+
+#: Umbral mínimo de diferencia (0-255) bajo el cual un píxel se considera quieto.
+STILL_MIN_THRESHOLD = 3
+
+#: Fracción del cambio global de la escena que se tolera como "quieto".
+#:
+#: Un overlay semitransparente (como el logo de TikTok) deja pasar parte del
+#: contenido de fondo, así que sus píxeles no son idénticos: cambian una
+#: fracción del cambio del fondo. Por eso el umbral debe escalar con el
+#: movimiento de la escena en lugar de ser un valor absoluto.
+STILL_RATIO = 0.25
+
+#: Percentil de las diferencias entre fotogramas que se considera típico.
+#: Evita que un destello puntual en la escena invalide la detección.
+STILL_PERCENTILE = 75
+
+#: Quietud por encima de la cual se considera anómala (un vídeo normal
+#: tiene entre el 10% y el 25% de píxeles quietos en una esquina).
+QUIET_BASELINE = 0.22
+
+#: Rango de quietud anómala que se normaliza a 1.0.
+QUIET_RANGE = 0.20
+
+#: Densidad de bordes a partir de la cual se considera "con detalle".
+EDGE_FULL = 8.0
 
 
 def _run_ffmpeg(args: list[str], timeout: int = 120) -> tuple[int, bytes, str]:
@@ -123,17 +177,15 @@ def _get_duration(video_path: Path) -> float:
         return 0.0
 
 
-def _extract_gray_frames(video_path: Path, count: int = 14) -> list[bytes]:
-    """Extrae `count` fotogramas en escala de grises del vídeo.
+def _extract_frames(video_path: Path, count: int = 14) -> np.ndarray:
+    """Extrae `count` fotogramas en escala de grises como array numpy.
 
-    Los fotogramas se reparten uniformemente a lo largo del vídeo usando el
-    filtro `fps`, que necesita conocer la duración.
+    Devuelve un array de forma (N, ALTO, ANCHO) con los valores en 0-255.
     """
     duration = _get_duration(video_path)
     if duration <= 0:
-        return []
+        return np.empty((0, FRAME_HEIGHT, FRAME_WIDTH), dtype=np.float32)
 
-    # `fps=N/duración` reparte los fotogramas por todo el vídeo.
     rate = max(count / duration, 0.01)
 
     code, stdout, _stderr = _run_ffmpeg(
@@ -152,201 +204,128 @@ def _extract_gray_frames(video_path: Path, count: int = 14) -> list[bytes]:
         ]
     )
     if code != 0 or not stdout:
-        return []
+        return np.empty((0, FRAME_HEIGHT, FRAME_WIDTH), dtype=np.float32)
 
     frame_size = FRAME_WIDTH * FRAME_HEIGHT
-    frames = []
-    for i in range(0, len(stdout) - frame_size + 1, frame_size):
-        frames.append(stdout[i : i + frame_size])
-    return frames
+    usable = len(stdout) // frame_size
+    if usable < 3:
+        return np.empty((0, FRAME_HEIGHT, FRAME_WIDTH), dtype=np.float32)
+
+    frames = np.frombuffer(stdout[: usable * frame_size], dtype=np.uint8)
+    return frames.reshape(usable, FRAME_HEIGHT, FRAME_WIDTH).astype(np.float32)
 
 
-def _zone_activity(frames: list[bytes], x0: int, y0: int, x1: int, y1: int) -> float:
-    """Devuelve el cambio medio entre fotogramas dentro de una zona.
+def _still_map(frames: np.ndarray) -> np.ndarray:
+    """Mapa de píxeles quietos (True = apenas cambia entre fotogramas).
 
-    Una marca de agua fija mantiene esta zona prácticamente quieta, mientras
-    que el contenido circundante se mueve.
+    El umbral es **adaptativo**: se calcula a partir del cambio global de la
+    escena. Un overlay semitransparente deja pasar parte del fondo, así que
+    sus píxeles cambian una fracción del cambio del fondo, no cero. Con un
+    umbral absoluto, un vídeo rápido hides la marca y uno lento la exagera.
     """
-    if len(frames) < 2:
-        return 0.0
+    if frames.shape[0] < 2:
+        return np.zeros(frames.shape[1:], dtype=bool)
 
-    diffs = []
-    for i in range(len(frames) - 1):
-        a = frames[i]
-        b = frames[i + 1]
-        total = 0
-        count = 0
-        for y in range(y0, y1):
-            row_a = a[y * FRAME_WIDTH + x0 : y * FRAME_WIDTH + x1]
-            row_b = b[y * FRAME_WIDTH + x0 : y * FRAME_WIDTH + x1]
-            total += sum(abs(p - q) for p, q in zip(row_a, row_b, strict=False))
-            count += len(row_a)
-        if count:
-            diffs.append(total / count)
+    diffs = np.abs(np.diff(frames, axis=0))  # (N-1, H, W)
 
-    return sum(diffs) / len(diffs) if diffs else 0.0
+    # Cambio global de la escena: la mediana de todas las diferencias.
+    global_change = float(np.median(diffs))
+    threshold = max(STILL_MIN_THRESHOLD, STILL_RATIO * global_change)
+
+    # Un píxel es "quieto" si en la mayoría de los pares de fotogramas
+    # consecutivos apenas cambia. Se usa un percentil en lugar del máximo
+    # para que un destello puntual en la escena no invalide la detección.
+    typical_diff = np.percentile(diffs, STILL_PERCENTILE, axis=0)
+    return typical_diff <= threshold
 
 
-def _reference_zone(x0: int, y0: int, x1: int, y1: int) -> tuple[int, int, int, int] | None:
-    """Devuelve una franja contigua a la zona para usarla como referencia.
+def _edge_map(frames: np.ndarray) -> np.ndarray:
+    """Mapa de densidad de bordes (gradiente espacial medio)."""
+    if frames.shape[0] == 0:
+        return np.zeros(frames.shape[1:], dtype=np.float32)
 
-    Se elige la banda lateral más cercana que no se solape con la zona.
+    gx = np.abs(np.diff(frames, axis=2))  # (N, H, W-1)
+    gy = np.abs(np.diff(frames, axis=1))  # (N, H-1, W)
+
+    h, w = frames.shape[1], frames.shape[2]
+    edges = np.zeros((h, w), dtype=np.float32)
+
+    edges[:, :-1] += gx.mean(axis=0)
+    edges[:-1, :] += gy.mean(axis=0)
+    return edges / 2.0
+
+
+def _scan_windows(
+    still: np.ndarray, edges: np.ndarray
+) -> list[tuple[str, int, int, int, int, float, float, float]]:
+    """Recorre una rejilla de ventanas y puntúa cada una.
+
+    Para cada ventana se compara la quietud de su interior con la de un
+    **anillo circundante**. Una marca de agua está congelada mientras el
+    contenido que la rodea se mueve: el anillo es ruidoso. En cambio, una
+    zona muerta de la escena (una pared lisa, un bloque de color) tiene un
+    entorno igual de quieto, y así se descarta.
+
+    Returns:
+        Lista de (nombre, x, y, w, h, score, quiet, edge_density)
     """
-    width = FRAME_WIDTH
+    height, width = still.shape
+    win_w = max(4, int(WINDOW_W * width))
+    win_h = max(4, int(WINDOW_H * height))
+    step_x = max(2, int(WINDOW_STEP * width))
+    step_y = max(2, int(WINDOW_STEP * height))
 
-    # Banda a la derecha.
-    ref_x0 = min(x1 + 3, width - 1)
-    ref_x1 = min(ref_x0 + (x1 - x0), width)
-    if ref_x1 - ref_x0 >= 6:
-        return (ref_x0, y0, ref_x1, y1)
+    # El anillo se extiende un 50% más allá de la ventana en cada lado.
+    ring_pad_x = max(2, win_w // 2)
+    ring_pad_y = max(2, win_h // 2)
 
-    # Banda a la izquierda.
-    ref_x1 = max(x0 - 3, 0)
-    ref_x0 = max(ref_x1 - (x1 - x0), 0)
-    if ref_x1 - ref_x0 >= 6:
-        return (ref_x0, y0, ref_x1, y1)
+    results: list[tuple[str, int, int, int, int, float, float, float]] = []
 
-    return None
+    for band_name, y_start, y_end in SCAN_BANDS:
+        y_from = int(y_start * height)
+        y_to = int(y_end * height)
 
+        for y0 in range(y_from, max(y_from + 1, y_to - win_h + 1), step_y):
+            for x0 in range(0, max(1, width - win_w + 1), step_x):
+                x1 = min(x0 + win_w, width)
+                y1 = min(y0 + win_h, height)
 
-def _edge_density(frames: list[bytes], x0: int, y0: int, x1: int, y1: int) -> float:
-    """Calcula la densidad de bordes (gradientes) en una zona.
+                region_still = still[y0:y1, x0:x1]
+                region_edges = edges[y0:y1, x0:x1]
 
-    Un logo incrustado produce bordes nítidos en una superficie pequeña; el
-    ruido de fondo produce muchos bordes suaves.
-    """
-    if len(frames) < 2:
-        return 0.0
+                quiet = float(region_still.mean())
+                edge_density = float(region_edges.mean())
 
-    total_edges = 0
-    samples = 0
+                # Anillo circundante: el entorno inmediato de la ventana.
+                ry0 = max(0, y0 - ring_pad_y)
+                ry1 = min(height, y1 + ring_pad_y)
+                rx0 = max(0, x0 - ring_pad_x)
+                rx1 = min(width, x1 + ring_pad_x)
 
-    for frame in frames:
-        for y in range(y0, max(y0 + 1, y1 - 1)):
-            for x in range(x0, max(x0 + 1, x1 - 1)):
-                idx = y * FRAME_WIDTH + x
-                if idx + 1 >= len(frame) or idx + FRAME_WIDTH >= len(frame):
-                    continue
-                gx = abs(frame[idx] - frame[idx + 1])
-                gy = abs(frame[idx] - frame[idx + FRAME_WIDTH])
-                total_edges += gx + gy
-                samples += 1
+                ring = still[ry0:ry1, rx0:rx1]
+                ring_quiet = float(ring.mean()) if ring.size else 0.0
 
-    if not samples:
-        return 0.0
-    return total_edges / samples
+                # Cuánto más quieta es la ventana que su entorno.
+                excess = max(0.0, quiet - ring_quiet)
 
+                # La quietud por encima de la línea base es anómala.
+                quiet_score = max(0.0, min(1.0, (quiet - QUIET_BASELINE) / QUIET_RANGE))
+                # Un logo tiene bordes definidos; una zona plana no.
+                edge_score = max(0.0, min(1.0, edge_density / EDGE_FULL))
 
-def _analyze_zone(
-    frames: list[bytes], zone: tuple[str, float, float, float, float]
-) -> WatermarkRegion:
-    """Analiza una zona concreta a lo largo de los fotogramas.
+                # Si el entorno también está congelado, no es un overlay sino
+                # una zona quieta de la escena.
+                local_score = min(1.0, excess / 0.15)
 
-    El criterio es directo: los píxeles de una capa de overlay **nunca**
-    cambian, mientras que los de la escena sí. Se mide la desviación
-    temporal de cada píxel y se cuenta qué proporción de la zona es
-    completamente estática.
+                # Ambas señales son necesarias: quieto + con bordes = overlay.
+                score = quiet_score * edge_score * local_score
 
-    Para descartar zonas muertas de la escena (un fondo negro, una pared),
-    se compara con una franja de referencia contigua: si ambas tienen la
-    misma proporción de píxeles estáticos, no hay overlay sino una zona
-    inactiva.
-    """
-    name, x_rel, y_rel, w_rel, h_rel = zone
-    width, height = FRAME_WIDTH, FRAME_HEIGHT
+                if score > 0:
+                    results.append(
+                        (band_name, x0, y0, x1 - x0, y1 - y0, score, quiet, edge_density)
+                    )
 
-    x0 = int(x_rel * width)
-    y0 = int(y_rel * height)
-    x1 = min(int((x_rel + w_rel) * width), width)
-    y1 = min(int((y_rel + h_rel) * height), height)
-
-    if x1 <= x0 or y1 <= y0:
-        return WatermarkRegion(name, x0, y0, 0, 0, 0.0, 0.0, 0.0)
-
-    static = _static_pixel_map(frames)
-
-    zone_static = _static_fraction(static, x0, y0, x1, y1)
-
-    ref = _reference_zone(x0, y0, x1, y1)
-    ref_static = _static_fraction(static, *ref) if ref else 0.0
-
-    if ref is None:
-        return WatermarkRegion(name, x0, y0, x1 - x0, y1 - y0, 0.0, 0.0, 0.0)
-
-    # Cuánto más "congelada" está la zona que su entorno inmediato.
-    # Una marca de agua deja entre un 10% y un 30% de píxeles estáticos
-    # frente a un 0% en el entorno; se normaliza ese rango a 0-1.
-    contrast = max(0.0, min(1.0, (zone_static - ref_static) / 0.20))
-
-    # La escena debe moverse de verdad alrededor: si todo está quieto, no
-    # hay overlay, solo una escena estática.
-    scene_motion = min(1.0, max(0.0, 1.0 - ref_static))
-
-    edges = _edge_density(frames, x0, y0, x1, y1)
-    edge_score = max(0.0, 1.0 - edges / 12.0)
-
-    # Score: contraste de píxeles congelados (principal) x movimiento de la
-    # escena (condición necesaria), refinado por la densidad de bordes.
-    score = max(0.0, min(1.0, contrast * scene_motion * 0.85 + edge_score * scene_motion * 0.15))
-
-    return WatermarkRegion(
-        name=name,
-        x=x0,
-        y=y0,
-        width=x1 - x0,
-        height=y1 - y0,
-        score=score,
-        stability=contrast,
-        edge_density=edges,
-    )
-
-
-def _static_pixel_map(frames: list[bytes]) -> list[list[bool]]:
-    """Marca los píxeles que no cambian entre fotogramas.
-
-    Devuelve una matriz (alto x ancho) de booleanos: True si el píxel es
-    prácticamente estático a lo largo de toda la secuencia.
-
-    Una marca de agua incrustada hace que sus píxeles salgan estáticos
-    (salvo que el contenido de detrás se mueva mucho), mientras que el
-    contenido real de la escena cambia.
-    """
-    if len(frames) < 2:
-        return []
-
-    width = FRAME_WIDTH
-    height = FRAME_HEIGHT
-
-    # Primer fotograma como base.
-    first = frames[0]
-    static = [[True] * width for _ in range(height)]
-
-    for frame in frames[1:]:
-        for y in range(height):
-            row_static = static[y]
-            base = y * width
-            for x in range(width):
-                if row_static[x] and abs(first[base + x] - frame[base + x]) > 2:
-                    row_static[x] = False
-
-    return static
-
-
-def _static_fraction(static: list[list[bool]], x0: int, y0: int, x1: int, y1: int) -> float:
-    """Proporción de píxeles estáticos dentro de una región."""
-    if not static or x1 <= x0 or y1 <= y0:
-        return 0.0
-
-    total = 0
-    static_count = 0
-    for y in range(y0, y1):
-        row = static[y]
-        for x in range(x0, x1):
-            total += 1
-            if row[x]:
-                static_count += 1
-
-    return static_count / total if total else 0.0
+    return results
 
 
 def detect_watermark(video_path: Path, threshold: float = 0.55) -> WatermarkReport:
@@ -363,23 +342,108 @@ def detect_watermark(video_path: Path, threshold: float = 0.55) -> WatermarkRepo
     if not video_path.exists():
         return WatermarkReport(error=f"No existe el vídeo: {video_path}")
 
-    frames = _extract_gray_frames(video_path, count=14)
-    if len(frames) < 3:
+    frames = _extract_frames(video_path, count=14)
+    if frames.shape[0] < 3:
         return WatermarkReport(error="No se pudieron extraer fotogramas para analizar")
 
-    regions = [_analyze_zone(frames, zone) for zone in CANDIDATE_ZONES]
-    regions = [r for r in regions if r.width > 0 and r.height > 0]
+    still = _still_map(frames)
+    edges = _edge_map(frames)
 
-    if not regions:
-        return WatermarkReport(frames_analyzed=len(frames), error="No se pudieron analizar zonas")
+    candidates = _scan_windows(still, edges)
+    candidates.sort(key=lambda item: -item[5])
 
-    candidates = [r for r in regions if r.stability > 0.30 and r.score >= threshold]
-    candidates.sort(key=lambda r: -r.score)
+    # Dimensiones del vídeo original, para escalar las coordenadas.
+    info = _get_video_info(video_path)
+    scale_x = (info["width"] / FRAME_WIDTH) if info else 1.0
+    scale_y = (info["height"] / FRAME_HEIGHT) if info else 1.0
+
+    # Descarta ventanas que se solapan: una sola marca de agua produce
+    # varias ventanas contiguas con puntuación alta.
+    regions: list[WatermarkRegion] = []
+    for band, x, y, w, h, score, quiet, edge_density in candidates:
+        if score < threshold:
+            continue
+        if any(
+            r.x < x + w and x < r.x + r.width and r.y < y + h and y < r.y + r.height
+            for r in regions
+        ):
+            continue
+        regions.append(
+            WatermarkRegion(
+                name=f"{band} ({int(x * scale_x)},{int(y * scale_y)})",
+                x=int(x * scale_x),
+                y=int(y * scale_y),
+                width=int(w * scale_x),
+                height=int(h * scale_y),
+                score=score,
+                stillness=quiet,
+                edge_density=edge_density,
+            )
+        )
+        if len(regions) >= 3:
+            break
 
     report = WatermarkReport(
-        detected=bool(candidates),
-        confidence=max((r.score for r in candidates), default=0.0),
-        regions=candidates,
-        frames_analyzed=len(frames),
+        detected=bool(regions),
+        confidence=max((r.score for r in regions), default=0.0),
+        regions=regions,
+        frames_analyzed=int(frames.shape[0]),
     )
+
+    if report.detected:
+        report.preview_path = _render_preview(video_path, report.regions)
+
     return report
+
+
+def _get_video_info(video_path: Path) -> dict | None:
+    """Metadatos del vídeo (dimensiones)."""
+    from utils import get_video_info
+
+    return get_video_info(video_path)
+
+
+def _render_preview(video_path: Path, regions: list[WatermarkRegion]) -> Path | None:
+    """Genera una imagen del primer fotograma con las zonas resaltadas.
+
+    Permite al usuario confirmar visualmente si lo detectado es una marca de
+    agua o simplemente un elemento fijo de la escena (un rótulo de una app,
+    el borde de un filtro, etc.).
+    """
+    bins = resolve_binaries()
+    if not bins.ffmpeg or not regions:
+        return None
+
+    out_path = Path(tempfile.mkdtemp(prefix="watermark_preview_")) / "preview.jpg"
+
+    drawboxes = []
+    for region in regions:
+        drawboxes.append(
+            f"drawbox=x={region.x}:y={region.y}:w={region.width}:h={region.height}:"
+            f"color=red@0.9:t=4"
+        )
+
+    cmd = [
+        str(bins.ffmpeg),
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        ",".join(drawboxes),
+        "-q:v",
+        "3",
+        str(out_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode == 0 and out_path.exists():
+            return out_path
+    except Exception:  # pragma: no cover - no debe romper el análisis
+        pass
+
+    return None

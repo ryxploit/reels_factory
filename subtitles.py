@@ -22,6 +22,51 @@ from utils import ProgressCallback, sanitize_filename, setup_logger
 logger = setup_logger("subtitles", config.paths.LOGS_PATH / "subtitles.log")
 
 
+def _patch_mps_float32(whisper_module, torch_module) -> None:
+    """Corrige los bugs de whisper con MPS (Metal Performance Shaders).
+
+    MPS no soporta tensores float64, y whisper los usa en dos sitios:
+
+    1. `whisper.audio.mel_filters` carga el banco de filtros mel desde un
+       `.npz` de NumPy, que son float64.
+    2. `whisper.timing.dtw` convierte la matriz a float64 con `.double()`
+       para calcular la alineación de palabras.
+
+    Sin esto, la transcripción falla en Apple Silicon con:
+
+        Cannot convert a MPS Tensor to float64 dtype as the MPS framework
+        doesn't support float64. Please use float32 instead.
+
+    Ambas correcciones son idempotentes.
+    """
+    audio = getattr(whisper_module, "audio", None)
+    if audio is not None:
+        original = getattr(audio, "mel_filters", None)
+        if original is not None and not getattr(original, "_reels_patched", False):
+
+            def mel_filters(device, n_mels):  # noqa: ANN001, ANN202
+                return original(device, n_mels).to(dtype=torch_module.float32)
+
+            mel_filters._reels_patched = True
+            audio.mel_filters = mel_filters
+
+    timing = getattr(whisper_module, "timing", None)
+    if timing is not None:
+        original_dtw = getattr(timing, "dtw", None)
+        if original_dtw is not None and not getattr(original_dtw, "_reels_patched", False):
+
+            def dtw(x):  # noqa: ANN001, ANN202
+                # El original hace `x.double()`, que falla si el tensor está
+                # en MPS (Metal no soporta float64). Se mueve a CPU antes:
+                # el cálculo en DTW es numérico y float32 es suficiente.
+                if x.is_cuda:
+                    return original_dtw(x)
+                return original_dtw(x.to(device="cpu", dtype=torch_module.float32))
+
+            dtw._reels_patched = True
+            timing.dtw = dtw
+
+
 @dataclass
 class SubtitleWord:
     """Una palabra individual con sus marcas de tiempo (resaltado estilo TikTok)."""
@@ -75,6 +120,7 @@ class SubtitleGenerator:
         self._model = None
         self._model_loaded = False
         self._loaded_model_size: str | None = None
+        self._device: str = "cpu"
         # Segmentos de la última transcripción, para exportarlos a SRT.
         self.last_segments: list[SubtitleSegment] = []
 
@@ -98,11 +144,14 @@ class SubtitleGenerator:
                 except Exception:
                     device = "cpu"
 
+            _patch_mps_float32(whisper, torch)
+
             self._model = whisper.load_model(self.model_size, device=device)
+            self._device = device
 
             self._model_loaded = True
             self._loaded_model_size = self.model_size
-            logger.info("Whisper model loaded successfully")
+            logger.info(f"Whisper model loaded successfully (device: {device})")
 
         except ImportError:
             raise ImportError(
@@ -110,6 +159,17 @@ class SubtitleGenerator:
             ) from None
         except Exception as e:
             raise RuntimeError(f"Failed to load Whisper model: {e}") from e
+
+    def _reload_on_cpu(self):
+        """Recarga el modelo Whisper en CPU como plan B."""
+
+        import whisper
+
+        logger.info("Reloading Whisper model on CPU")
+        self._model = whisper.load_model(self.model_size, device="cpu")
+        self._device = "cpu"
+        self._model_loaded = True
+        self._loaded_model_size = self.model_size
 
     def _format_ass_time(self, seconds: float) -> str:
         """
@@ -393,7 +453,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if language:
                 transcribe_options["language"] = language
 
-            result = self._model.transcribe(str(audio_path), **transcribe_options)
+            try:
+                result = self._model.transcribe(str(audio_path), **transcribe_options)
+            except Exception as e:
+                # Si falla en MPS, se reintenta en CPU: es más lento pero
+                # funciona. MPS tiene limitaciones con algunos dtypes.
+                if getattr(self, "_device", "cpu") != "mps":
+                    raise
+                logger.warning(f"MPS transcription failed ({e}); retrying on CPU")
+                self._reload_on_cpu()
+                result = self._model.transcribe(str(audio_path), **transcribe_options)
 
             raise_if_cancelled()
 

@@ -558,6 +558,11 @@ class VideoProcessor:
         if output_filename:
             if not output_filename.endswith(".mp4"):
                 output_filename += ".mp4"
+        elif self.video_config.NEUTRAL_FILENAMES:
+            # Nombre neutro: el título del vídeo original (y sus hashtags)
+            # acabarían en el nombre del archivo, que es visible al subirlo
+            # a la plataforma. Se usa solo la fecha y un contador.
+            output_filename = generate_unique_filename("reel", "mp4")
         else:
             output_filename = generate_unique_filename(f"reel_{input_path.stem}", "mp4")
 
@@ -695,9 +700,11 @@ class VideoProcessor:
 
             if watermark_report and watermark_report.detected:
                 warnings.append(
-                    "Se detectó una marca de agua incrustada en los píxeles: "
-                    f"{watermark_report.summary}. Esta marca NO se puede quitar "
-                    "automáticamente; conviene cubrirla con tu overlay."
+                    "Se detectó una zona fija que podría ser una marca de agua "
+                    f"grabada en los píxeles: {watermark_report.summary}. "
+                    "Si es el logo de la plataforma original, no se puede quitar "
+                    "automáticamente: conviene cubrirlo con tu overlay. "
+                    "Usa «Analizar marca de agua» para ver la zona marcada."
                 )
 
             thumbnail_path = self._generate_thumbnail(output_path, output_path)

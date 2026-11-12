@@ -58,6 +58,11 @@ class VideoConfig:
     # Verificación del archivo final contra las especificaciones de la plataforma.
     VALIDATE_OUTPUT: bool = True
 
+    # Nombre de archivo de salida neutro, sin el título del vídeo original.
+    # El nombre del archivo acaba visible en la plataforma al subirlo, así
+    # que los hashtags del creator original no deben travelling con él.
+    NEUTRAL_FILENAMES: bool = True
+
 
 @dataclass
 class SubtitleConfig:
@@ -136,6 +141,8 @@ class FingerprintConfig:
 
     # Detección de marca de agua incrustada
     DETECT_WATERMARK: bool = True
+    # Calibrado con vídeos reales: por debajo de 0.4 no hay nada fijo
+    # sospechoso; por encima de 0.8 la detección es concluyente.
     WATERMARK_THRESHOLD: float = 0.55
 
 
@@ -206,7 +213,7 @@ class Config:
 
         # App settings
         self.APP_NAME = "ReelsFactoryPro"
-        self.APP_VERSION = "1.4.0"
+        self.APP_VERSION = "1.4.1"
         self.DEBUG = os.environ.get("REELS_FACTORY_DEBUG", "false").lower() == "true"
 
 
