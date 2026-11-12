@@ -13,25 +13,30 @@ Este repositorio incluye automatización vía CI, pero la firma/notarización re
 
 ### macOS
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
+python3.13 -m venv .venv && source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller dmgbuild
 
-python -m PyInstaller packaging/pyinstaller/ReelsFactoryPro.spec
-python packaging/macos/build_dmg.py
+python -m PyInstaller build_tools/pyinstaller/ReelsFactoryPro.spec
+python build_tools/macos/build_dmg.py
 ```
 
 ### Windows (PowerShell)
 ```powershell
-py -3.11 -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
 
-python -m PyInstaller packaging\pyinstaller\ReelsFactoryPro.spec
+python -m PyInstaller build_tools\pyinstaller\ReelsFactoryPro.spec
 ```
+
+## Automatización CI
+
+- `.github/workflows/ci.yml` — tests (Python 3.11/3.12/3.13) + lint/formato en cada PR a `main`.
+- `.github/workflows/release.yml` — build de `.dmg` (macOS) y `.msi` (Windows) al hacer push de un tag `v*`.
 
 ## Firma y notarización
 

@@ -19,7 +19,13 @@ build/
 dist/
 /*.spec
 
+# Metadatos de setuptools (pip install -e .)
+*.egg-info/
+
 *.dmg
 *.pkg
 *.msi
 *.exe
+
+# Iconos generados a partir de assets/icon.svg
+assets/generated_icons/

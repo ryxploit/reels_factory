@@ -5,15 +5,20 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install system deps
         run: |
@@ -27,23 +32,22 @@ jobs:
           python -m pip install pyinstaller dmgbuild pytest
 
       - name: Run unit tests
-        run: |
-          pytest -q
+        run: python -m pytest -q
 
       - name: Build app (PyInstaller)
         run: |
-          python -m PyInstaller packaging/pyinstaller/ReelsFactoryPro.spec
+          python -m PyInstaller build_tools/pyinstaller/ReelsFactoryPro.spec
 
       - name: Build DMG
         run: |
-          python packaging/macos/build_dmg.py
+          python build_tools/macos/build_dmg.py
 
       - name: Checksums
         run: |
           cd dist
           shasum -a 256 ReelsFactoryPro.dmg > SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: |
@@ -53,11 +57,13 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install python deps
         run: |
@@ -66,12 +72,11 @@ jobs:
           python -m pip install cx_Freeze pytest
 
       - name: Run unit tests
-        run: |
-          pytest -q
+        run: python -m pytest -q
 
       - name: Build MSI (cx_Freeze)
         run: |
-          python packaging\windows\cxfreeze_setup.py bdist_msi
+          python build_tools\windows\cxfreeze_setup.py bdist_msi
 
       - name: Checksums
         shell: pwsh
@@ -81,10 +86,9 @@ jobs:
             "$hash  $($_.Name)" | Out-File -FilePath dist\SHA256SUMS.txt -Append -Encoding ascii
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
             dist/*.msi
             dist/SHA256SUMS.txt
-

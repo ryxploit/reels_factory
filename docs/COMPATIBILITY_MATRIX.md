@@ -8,6 +8,15 @@
 | Windows 10 | 21H2 o superior | x64 | Soportado |
 | Windows 11 | 22H2 o superior | x64 | Soportado |
 
+## Versiones de Python
+
+| Python | Estado | Notas |
+|---|---|---|
+| 3.11 | Soportado | Mínimo requerido |
+| 3.12 | Soportado | Probado en CI |
+| 3.13 | Soportado | Probado en CI |
+| < 3.11 | No soportado | `run.sh`/`run.ps1` lo rechazan |
+
 ## Nota importante sobre Windows x86 (32-bit)
 
 La funcionalidad de subtítulos basada en Whisper + PyTorch no es viable en Windows 32-bit (el ecosistema moderno de PyTorch/Whisper se distribuye principalmente para x64). Para Windows x86 se recomienda:

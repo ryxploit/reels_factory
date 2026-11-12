@@ -27,7 +27,7 @@ function Get-PythonCommand {
     return $env:PYTHON_BIN
   }
   if (Get-Command py -ErrorAction SilentlyContinue) {
-    return 'py -3.11'
+    return 'py -3.13'
   }
   if (Get-Command python -ErrorAction SilentlyContinue) {
     return 'python'
@@ -65,7 +65,7 @@ function Ensure-SystemDeps {
 
   if ($hasWinget) {
     Write-Step "Verificando dependencias (winget)..."
-    winget install -e --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements | Out-Null
+    winget install -e --id Python.Python.3.13 --silent --accept-package-agreements --accept-source-agreements | Out-Null
     winget install -e --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements | Out-Null
     return
   }

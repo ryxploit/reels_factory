@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PYTHON=${PYTHON:-python3}
 
 echo "Generando iconos..."
-$PYTHON "$ROOT/packaging/macos/make_icns.py"
+$PYTHON "$ROOT/build_tools/macos/make_icns.py"
 
 ICNS="$ROOT/assets/generated_icons/App.icns"
 if [ ! -f "$ICNS" ]; then
@@ -18,9 +18,9 @@ fi
 echo "Ejecutando PyInstaller..."
 # Asegúrate de tener pyinstaller instalado: python3 -m pip install pyinstaller
 cd "$ROOT"
-$PYTHON -m PyInstaller packaging/pyinstaller/ReelsFactoryPro.spec
+$PYTHON -m PyInstaller build_tools/pyinstaller/ReelsFactoryPro.spec
 
 echo "Creando DMG..."
-$PYTHON packaging/macos/build_dmg.py
+$PYTHON build_tools/macos/build_dmg.py
 
 echo "Build completado. Busca el DMG en dist/" 

@@ -1,25 +1,25 @@
 # Reels Factory - Dependencies
 # ============================
 # Optimized for macOS Apple Silicon (M1/M2/M3) and Windows 10/11 x64
+# Python 3.11 - 3.13
 
 # Core dependencies
-yt-dlp>=2024.1.0           # TikTok video downloading (Python API)
+yt-dlp>=2026.10.26         # TikTok video downloading (Python API)
 
 # GUI
-PySide6>=6.6.0
+PySide6>=6.12.0
 
 # AI/ML for subtitles
-openai-whisper>=20231117   # Whisper transcription
-torch>=2.2.0               # PyTorch (Windows: requiere x64)
+openai-whisper>=20250625   # Whisper transcription
+torch>=2.6.0               # PyTorch (Windows: requiere x64)
 
 # Note: FFmpeg must be installed separately via Homebrew
-# brew install ffmpeg
+# brew install ffmpeg-full
 
 # Optional but recommended
-numpy>=1.24.0              # Numerical operations
-tqdm>=4.65.0               # Progress bars for CLI
+numpy>=2.0.2,<2.6          # Numerical operations (<2.6 requerido por numba)
+tqdm>=4.70.1               # Progress bars for CLI
 
-# Development (optional)
-# pytest>=7.0.0
-# black>=23.0.0
-# flake8>=6.0.0
+# Development (optional) - ver requirements-dev.txt
+# pytest>=9.2.0
+# ruff>=0.17.5

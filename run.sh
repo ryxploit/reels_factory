@@ -120,7 +120,7 @@ choose_python() {
     return
   fi
   local candidate
-  for candidate in python3.12 python3.11 python3 py; do
+  for candidate in python3.13 python3.12 python3.11 python3 py; do
     if command -v "$candidate" >/dev/null 2>&1; then
       echo "$candidate"
       return
@@ -146,7 +146,7 @@ install_system_deps() {
   if is_macos; then
     ensure_homebrew
     log "🔎 macOS detectado. Verificando dependencias..."
-    brew_install_if_missing "python@3.11" || true
+    brew_install_if_missing "python@3.13" || true
     brew_install_if_missing "ffmpeg-full" || true
     brew_install_if_missing "yt-dlp" || true
     ensure_ffmpeg_full_path_macos

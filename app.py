@@ -9,10 +9,10 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
+from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,15 +24,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QProgressBar,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtSvgWidgets import QSvgWidget
 
 from config import config
 from pipeline import CancelledError, PipelineSettings, ReelsPipeline
@@ -43,7 +42,6 @@ from utils import (
     setup_logger,
     validate_tiktok_url,
 )
-
 
 logger = setup_logger("app", config.paths.LOGS_PATH / "app.log")
 
@@ -106,9 +104,9 @@ class PipelineWorker(QObject):
                 self.job_update.emit(idx, "En curso", 0)
                 self.log.emit(f"Iniciando job {idx + 1}/{total}")
 
-                def progress_cb(value: int, status: str):
+                def progress_cb(value: int, status: str, idx: int = idx):
                     self.job_update.emit(idx, status, value)
-                    overall = int((((idx + (value / 100.0)) / max(total, 1)) * 100))
+                    overall = int(((idx + (value / 100.0)) / max(total, 1)) * 100)
                     self.overall.emit(min(100, max(0, overall)), f"{idx + 1}/{total}: {status}")
 
                 def log_cb(message: str):
@@ -161,8 +159,8 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(config.paths.ASSETS_PATH / "icon.svg")))
         self._apply_theme()
 
-        self._thread: Optional[QThread] = None
-        self._worker: Optional[PipelineWorker] = None
+        self._thread: QThread | None = None
+        self._worker: PipelineWorker | None = None
         self._jobs: list[UiJob] = []
 
         root = QWidget()
@@ -178,12 +176,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(deps)
 
         # Splitter horizontal para columnas izquierda/derecha
-        from PySide6.QtWidgets import QSplitter
         from PySide6.QtCore import Qt as QtCore_Qt
-        
+        from PySide6.QtWidgets import QSplitter
+
         main_splitter = QSplitter(QtCore_Qt.Horizontal)
         main_splitter.setChildrenCollapsible(False)
-        
+
         # Panel izquierdo
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
@@ -192,7 +190,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._build_import_box())
         left_layout.addWidget(self._build_settings_box())
         left_layout.addStretch(1)
-        
+
         # Panel derecho
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -200,11 +198,11 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(12)
         right_layout.addWidget(self._build_jobs_box(), 1)
         right_layout.addWidget(self._build_logs_box(), 2)
-        
+
         main_splitter.addWidget(left_widget)
         main_splitter.addWidget(right_widget)
         main_splitter.setSizes([380, 620])
-        
+
         layout.addWidget(main_splitter, 1)
 
         footer = self._build_footer()
@@ -456,7 +454,7 @@ class MainWindow(QMainWindow):
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Modelo"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["tiny", "base", "small", "medium", "large"]) 
+        self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
         self.model_combo.setCurrentText("base")
         self.model_combo.setToolTip("Selecciona el tamaño del modelo de transcripción.")
         model_row.addWidget(self.model_combo)
@@ -594,7 +592,9 @@ class MainWindow(QMainWindow):
         self.copy_tags_btn = QPushButton("Copiar")
         self.copy_tags_btn.setObjectName("ghost")
         self.copy_tags_btn.setFixedSize(70, 32)
-        self.copy_tags_btn.clicked.connect(lambda: self._copy_to_clipboard(self.hashtags_edit.text()))
+        self.copy_tags_btn.clicked.connect(
+            lambda: self._copy_to_clipboard(self.hashtags_edit.text())
+        )
         self.copy_all_btn = QPushButton("Todo")
         self.copy_all_btn.setObjectName("ghost")
         self.copy_all_btn.setFixedSize(60, 32)
@@ -610,17 +610,17 @@ class MainWindow(QMainWindow):
         sep.setFixedHeight(1)
         sep.setStyleSheet("background-color: #1E293B;")
         layout.addWidget(sep)
-        
+
         # === LOGS ===
         logs_header = QLabel("📝 Registro de Actividad")
         logs_header.setStyleSheet("font-weight: bold; font-size: 13px; color: #7DD3FC;")
         layout.addWidget(logs_header)
-        
+
         self.logs = QTextEdit()
         self.logs.setReadOnly(True)
         self.logs.setMinimumHeight(100)
         layout.addWidget(self.logs, 1)
-        
+
         return box
 
     def _build_footer(self) -> QWidget:
@@ -680,7 +680,9 @@ class MainWindow(QMainWindow):
 
         Leerá el contenido como texto plano y lo añadirá al campo existente.
         """
-        file_path, _ = QFileDialog.getOpenFileName(self, "Importar URLs", str(config.paths.INPUT_PATH), "Text (*.txt)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Importar URLs", str(config.paths.INPUT_PATH), "Text (*.txt)"
+        )
         if not file_path:
             return
         text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
@@ -697,7 +699,7 @@ class MainWindow(QMainWindow):
             self,
             "Seleccionar logo",
             str(config.paths.ASSETS_PATH),
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp)",
         )
         if not file_path:
             return
@@ -718,10 +720,14 @@ class MainWindow(QMainWindow):
         else:
             subprocess.run(["xdg-open", out])
 
-    def _refresh_deps(self):
+    def _refresh_deps(self, prompt_if_missing: bool = True):
         """Verifica si las dependencias externas están disponibles.
 
         Comprueba FFmpeg, soporte de subtítulos y yt-dlp y actualiza la etiqueta.
+
+        Args:
+            prompt_if_missing: Si es True, muestra el diálogo de resolución
+                cuando faltan dependencias.
         """
         ffmpeg_ok, ffmpeg_msg = check_ffmpeg_installed()
         subs_ok, _subs_msg = check_ffmpeg_subtitles_support()
@@ -738,22 +744,44 @@ class MainWindow(QMainWindow):
         self.deps_label.setText(" | ".join(parts))
 
         # Si faltan dependencias, ofrecer un diálogo UI para resolverlo
-        if not ffmpeg_ok or not ytdlp_ok:
+        if prompt_if_missing and (not ffmpeg_ok or not ytdlp_ok):
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(250, lambda: self._show_missing_deps_dialog(ffmpeg_ok, ffmpeg_msg, subs_ok, ytdlp_ok, ytdlp_msg))
 
-    def _show_missing_deps_dialog(self, ffmpeg_ok: bool, ffmpeg_msg: str, subs_ok: bool, ytdlp_ok: bool, ytdlp_msg: str, start_on_success: bool = False):
+            QTimer.singleShot(
+                250,
+                lambda: self._show_missing_deps_dialog(
+                    ffmpeg_ok, ffmpeg_msg, subs_ok, ytdlp_ok, ytdlp_msg
+                ),
+            )
+
+    def _show_missing_deps_dialog(
+        self,
+        ffmpeg_ok: bool,
+        ffmpeg_msg: str,
+        subs_ok: bool,
+        ytdlp_ok: bool,
+        ytdlp_msg: str,
+        start_on_success: bool = False,
+    ):
         """Muestra un diálogo modal para resolver dependencias sin terminal.
 
         Permite seleccionar un binario de FFmpeg o intentar instalar `yt-dlp`
         desde la interfaz. Las acciones se realizan en segundo plano y la
         interfaz se actualiza al terminar.
         """
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QGridLayout, QTextEdit, QProgressBar, QLabel
         import subprocess
-        import threading
         import sys
+        import threading
         import webbrowser
+
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QGridLayout,
+            QLabel,
+            QProgressBar,
+            QTextEdit,
+        )
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Dependencias faltantes")
@@ -766,7 +794,7 @@ class MainWindow(QMainWindow):
         msg_lines.append(f"FFmpeg: {'OK' if ffmpeg_ok else 'FALTA'} - {ffmpeg_msg}")
         msg_lines.append(f"Subtítulos: {'OK' if subs_ok else 'NO'}")
         msg_lines.append(f"yt-dlp: {'OK' if ytdlp_ok else 'FALTA'} - {ytdlp_msg}")
-        info.setPlainText('\n'.join(msg_lines))
+        info.setPlainText("\n".join(msg_lines))
 
         lbl = QLabel("Selecciona una acción (no se necesita terminal):")
 
@@ -788,15 +816,27 @@ class MainWindow(QMainWindow):
         layout.addWidget(progress, 3, 0)
 
         def select_ffmpeg():
-            path, _ = QFileDialog.getOpenFileName(self, "Seleccionar ffmpeg", str(config.paths.BASE_PATH), "Executable (ffmpeg*);;All Files (*)")
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Seleccionar ffmpeg",
+                str(config.paths.BASE_PATH),
+                "Executable (ffmpeg*);;All Files (*)",
+            )
             if not path:
                 return
             # Ofrecer copiar el binario a third_party para empaquetado
             from PySide6.QtWidgets import QMessageBox
-            copy_choice = QMessageBox.question(self, "Copiar ffmpeg", "¿Copiar el binario seleccionado a third_party/ffmpeg/bin para uso interno y empaquetado?", QMessageBox.Yes | QMessageBox.No)
+
+            copy_choice = QMessageBox.question(
+                self,
+                "Copiar ffmpeg",
+                "¿Copiar el binario seleccionado a third_party/ffmpeg/bin para uso interno y empaquetado?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
             try:
                 if copy_choice == QMessageBox.Yes:
                     import shutil
+
                     dest_dir = config.paths.BASE_PATH / "third_party" / "ffmpeg" / "bin"
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     # Nombre destino sin extensión en mac/linux
@@ -829,13 +869,21 @@ class MainWindow(QMainWindow):
             def run_install():
                 try:
                     # Ejecutar pip e ir capturando salida en tiempo real
-                    proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "yt-dlp"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    proc = subprocess.Popen(
+                        [sys.executable, "-m", "pip", "install", "yt-dlp"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
                     if proc.stdout:
                         for line in proc.stdout:
-                            stripped = line.rstrip('\n')
-                            def append_line(l=stripped):
-                                info.append(l)
+                            stripped = line.rstrip("\n")
+
+                            def append_line(text=stripped):
+                                info.append(text)
+
                             from PySide6.QtCore import QTimer
+
                             QTimer.singleShot(0, append_line)
                     proc.wait()
                     ret = proc.returncode
@@ -845,17 +893,29 @@ class MainWindow(QMainWindow):
                         progress.setVisible(False)
                         install_ytdlp_btn.setEnabled(True)
                         if ret == 0:
-                            QMessageBox.information(self, "Instalación", "yt-dlp instalado correctamente.")
+                            QMessageBox.information(
+                                self, "Instalación", "yt-dlp instalado correctamente."
+                            )
                         else:
-                            QMessageBox.warning(self, "Instalación", f"Error al instalar yt-dlp (código {ret}). Revisa el log arriba.")
+                            QMessageBox.warning(
+                                self,
+                                "Instalación",
+                                f"Error al instalar yt-dlp (código {ret}). Revisa el log arriba.",
+                            )
                         self._refresh_deps()
 
                     from PySide6.QtCore import QTimer
+
                     QTimer.singleShot(100, on_done)
                 except Exception as e:
                     self._append_log(f"Error instalación yt-dlp: {e}")
                     from PySide6.QtCore import QTimer
-                    QTimer.singleShot(100, lambda: QMessageBox.warning(self, "Instalación", str(e)))
+
+                    # `e` se elimina al salir del bloque except: se captura el valor.
+                    err_msg = str(e)
+                    QTimer.singleShot(
+                        100, lambda: QMessageBox.warning(self, "Instalación", err_msg)
+                    )
                 return
 
             t = threading.Thread(target=run_install, daemon=True)
@@ -863,7 +923,9 @@ class MainWindow(QMainWindow):
 
         def install_ffmpeg_full():
             if sys.platform != "darwin":
-                QMessageBox.information(self, "FFmpeg", "La instalación automática solo está disponible en macOS.")
+                QMessageBox.information(
+                    self, "FFmpeg", "La instalación automática solo está disponible en macOS."
+                )
                 return
             install_ffmpeg_btn.setEnabled(False)
             progress.setVisible(True)
@@ -872,6 +934,7 @@ class MainWindow(QMainWindow):
             def run_install():
                 try:
                     import shutil
+
                     brew = shutil.which("brew")
                     if not brew:
                         for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
@@ -879,18 +942,28 @@ class MainWindow(QMainWindow):
                                 brew = candidate
                                 break
                     if not brew:
-                        raise RuntimeError("Homebrew no encontrado. Instálalo desde https://brew.sh")
+                        raise RuntimeError(
+                            "Homebrew no encontrado. Instálalo desde https://brew.sh"
+                        )
 
-                    proc = subprocess.Popen([brew, "install", "ffmpeg-full"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    proc = subprocess.Popen(
+                        [brew, "install", "ffmpeg-full"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
                     if proc.stdout:
                         for line in proc.stdout:
-                            l = line.rstrip("\n")
+                            text = line.rstrip("\n")
                             from PySide6.QtCore import QTimer
-                            QTimer.singleShot(0, lambda txt=l: info.append(txt))
+
+                            QTimer.singleShot(0, lambda txt=text: info.append(txt))
                     proc.wait()
 
                     # Asegurar PATH del ffmpeg-full instalado
-                    prefix = subprocess.run([brew, "--prefix", "ffmpeg-full"], capture_output=True, text=True)
+                    prefix = subprocess.run(
+                        [brew, "--prefix", "ffmpeg-full"], capture_output=True, text=True
+                    )
                     if prefix.returncode == 0:
                         pref = prefix.stdout.strip()
                         if pref:
@@ -900,17 +973,29 @@ class MainWindow(QMainWindow):
                         progress.setVisible(False)
                         install_ffmpeg_btn.setEnabled(True)
                         if proc.returncode == 0:
-                            QMessageBox.information(self, "FFmpeg", "ffmpeg-full instalado correctamente.")
+                            QMessageBox.information(
+                                self, "FFmpeg", "ffmpeg-full instalado correctamente."
+                            )
                         else:
-                            QMessageBox.warning(self, "FFmpeg", "Error al instalar ffmpeg-full. Revisa el log.")
+                            QMessageBox.warning(
+                                self, "FFmpeg", "Error al instalar ffmpeg-full. Revisa el log."
+                            )
                         self._refresh_deps()
 
                     from PySide6.QtCore import QTimer
+
                     QTimer.singleShot(100, on_done)
                 except Exception as e:
                     from PySide6.QtCore import QTimer
-                    QTimer.singleShot(0, lambda: info.append(f"Error instalando ffmpeg-full: {e}\n"))
-                    QTimer.singleShot(100, lambda: (progress.setVisible(False), install_ffmpeg_btn.setEnabled(True)))
+
+                    err_msg = str(e)
+                    QTimer.singleShot(
+                        0, lambda: info.append(f"Error instalando ffmpeg-full: {err_msg}\n")
+                    )
+                    QTimer.singleShot(
+                        100,
+                        lambda: (progress.setVisible(False), install_ffmpeg_btn.setEnabled(True)),
+                    )
 
             t = threading.Thread(target=run_install, daemon=True)
             t.start()
@@ -928,111 +1013,157 @@ class MainWindow(QMainWindow):
                     except Exception:
                         # intentar instalar cairosvg
                         info.append("cairosvg no encontrado, instalando...\n")
-                        proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "cairosvg"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                        proc = subprocess.Popen(
+                            [sys.executable, "-m", "pip", "install", "cairosvg"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
                         if proc.stdout:
                             for line in proc.stdout:
-                                l = line.rstrip('\n')
+                                text = line.rstrip("\n")
                                 from PySide6.QtCore import QTimer
-                                QTimer.singleShot(0, lambda txt=l: info.append(txt))
+
+                                QTimer.singleShot(0, lambda txt=text: info.append(txt))
                         proc.wait()
                         if proc.returncode != 0:
-                            raise RuntimeError("Fallo instalando cairosvg")
+                            raise RuntimeError("Fallo instalando cairosvg") from None
                         import importlib
-                        cairosvg = importlib.import_module('cairosvg')
+
+                        cairosvg = importlib.import_module("cairosvg")
 
                     sizes = [16, 32, 64, 128, 256, 512, 1024]
-                    src = config.paths.ASSETS_PATH / 'icon.svg'
-                    out_dir = config.paths.ASSETS_PATH / 'generated_icons'
+                    src = config.paths.ASSETS_PATH / "icon.svg"
+                    out_dir = config.paths.ASSETS_PATH / "generated_icons"
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    from pathlib import Path as _Path
                     for s in sizes:
-                        out_file = out_dir / f'icon_{s}x{s}.png'
-                        cairosvg.svg2png(url=str(src), write_to=str(out_file), output_width=s, output_height=s)
+                        out_file = out_dir / f"icon_{s}x{s}.png"
+                        cairosvg.svg2png(
+                            url=str(src), write_to=str(out_file), output_width=s, output_height=s
+                        )
                         from PySide6.QtCore import QTimer
-                        QTimer.singleShot(0, lambda txt=f'Generado: {out_file}': info.append(txt))
+
+                        QTimer.singleShot(0, lambda txt=f"Generado: {out_file}": info.append(txt))
 
                     # Crear .iconset para macOS
-                    iconset = out_dir / 'App.iconset'
+                    iconset = out_dir / "App.iconset"
                     iconset.mkdir(parents=True, exist_ok=True)
+
                     def cp(srcp, dstp):
                         try:
                             import shutil
+
                             shutil.copy2(str(srcp), str(dstp))
                         except Exception:
                             pass
 
-                    cp(out_dir / 'icon_16x16.png', iconset / 'icon_16x16.png')
-                    cp(out_dir / 'icon_32x32.png', iconset / 'icon_16x16@2x.png')
-                    cp(out_dir / 'icon_32x32.png', iconset / 'icon_32x32.png')
-                    cp(out_dir / 'icon_64x64.png', iconset / 'icon_32x32@2x.png')
-                    cp(out_dir / 'icon_128x128.png', iconset / 'icon_128x128.png')
-                    cp(out_dir / 'icon_256x256.png', iconset / 'icon_128x128@2x.png')
-                    cp(out_dir / 'icon_256x256.png', iconset / 'icon_256x256.png')
-                    cp(out_dir / 'icon_512x512.png', iconset / 'icon_256x256@2x.png')
-                    cp(out_dir / 'icon_512x512.png', iconset / 'icon_512x512.png')
-                    cp(out_dir / 'icon_1024x1024.png', iconset / 'icon_512x512@2x.png')
+                    cp(out_dir / "icon_16x16.png", iconset / "icon_16x16.png")
+                    cp(out_dir / "icon_32x32.png", iconset / "icon_16x16@2x.png")
+                    cp(out_dir / "icon_32x32.png", iconset / "icon_32x32.png")
+                    cp(out_dir / "icon_64x64.png", iconset / "icon_32x32@2x.png")
+                    cp(out_dir / "icon_128x128.png", iconset / "icon_128x128.png")
+                    cp(out_dir / "icon_256x256.png", iconset / "icon_128x128@2x.png")
+                    cp(out_dir / "icon_256x256.png", iconset / "icon_256x256.png")
+                    cp(out_dir / "icon_512x512.png", iconset / "icon_256x256@2x.png")
+                    cp(out_dir / "icon_512x512.png", iconset / "icon_512x512.png")
+                    cp(out_dir / "icon_1024x1024.png", iconset / "icon_512x512@2x.png")
 
                     # Intentar crear .icns con iconutil (solo mac)
-                    icns_path = out_dir / 'App.icns'
+                    icns_path = out_dir / "App.icns"
                     try:
-                        if sys.platform == 'darwin':
-                            subprocess.run(['iconutil', '-c', 'icns', str(iconset), '-o', str(icns_path)], check=True)
+                        if sys.platform == "darwin":
+                            subprocess.run(
+                                ["iconutil", "-c", "icns", str(iconset), "-o", str(icns_path)],
+                                check=True,
+                            )
                             from PySide6.QtCore import QTimer
-                            QTimer.singleShot(0, lambda: info.append(f'ICNS creado: {icns_path}\n'))
+
+                            QTimer.singleShot(0, lambda: info.append(f"ICNS creado: {icns_path}\n"))
                     except Exception:
                         from PySide6.QtCore import QTimer
-                        QTimer.singleShot(0, lambda: info.append('No se pudo generar .icns (iconutil no disponible).\n'))
+
+                        QTimer.singleShot(
+                            0,
+                            lambda: info.append(
+                                "No se pudo generar .icns (iconutil no disponible).\n"
+                            ),
+                        )
 
                     # Intentar generar .ico para Windows usando Pillow
                     try:
                         try:
                             from PIL import Image
                         except Exception:
-                            info.append('Pillow no encontrado, instalando...\n')
-                            proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "Pillow"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                            info.append("Pillow no encontrado, instalando...\n")
+                            proc = subprocess.Popen(
+                                [sys.executable, "-m", "pip", "install", "Pillow"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                            )
                             if proc.stdout:
                                 for line in proc.stdout:
-                                    l = line.rstrip('\n')
+                                    text = line.rstrip("\n")
                                     from PySide6.QtCore import QTimer
-                                    QTimer.singleShot(0, lambda txt=l: info.append(txt))
+
+                                    QTimer.singleShot(0, lambda txt=text: info.append(txt))
                             proc.wait()
                             if proc.returncode != 0:
-                                raise RuntimeError('Fallo instalando Pillow')
+                                raise RuntimeError("Fallo instalando Pillow") from None
                             from PIL import Image
 
                         # Cargar varias resoluciones y guardar .ico
-                        ico_path = out_dir / 'icon.ico'
+                        ico_path = out_dir / "icon.ico"
                         sizes = [256, 128, 64, 32, 16]
                         images = []
                         for s in sizes:
-                            p = out_dir / f'icon_{s}x{s}.png'
+                            p = out_dir / f"icon_{s}x{s}.png"
                             if p.exists():
-                                images.append(Image.open(str(p)).convert('RGBA'))
+                                images.append(Image.open(str(p)).convert("RGBA"))
                         if images:
                             # Guardar el mayor con tamaños adicionales
-                            images[0].save(str(ico_path), format='ICO', sizes=[(s, s) for s in sizes])
+                            images[0].save(
+                                str(ico_path), format="ICO", sizes=[(s, s) for s in sizes]
+                            )
                             from PySide6.QtCore import QTimer
-                            QTimer.singleShot(0, lambda: info.append(f'ICO creado: {ico_path}\n'))
+
+                            QTimer.singleShot(0, lambda: info.append(f"ICO creado: {ico_path}\n"))
                     except Exception:
                         from PySide6.QtCore import QTimer
-                        QTimer.singleShot(0, lambda: info.append('No se pudo generar .ico.\n'))
+
+                        QTimer.singleShot(0, lambda: info.append("No se pudo generar .ico.\n"))
 
                     from PySide6.QtCore import QTimer
-                    QTimer.singleShot(0, lambda: info.append('Generación de iconos finalizada.\n'))
+
+                    QTimer.singleShot(0, lambda: info.append("Generación de iconos finalizada.\n"))
                     from PySide6.QtCore import QTimer
-                    QTimer.singleShot(100, lambda: (progress.setVisible(False), install_btn.setEnabled(True), self._append_log('Iconos generados')))
+
+                    QTimer.singleShot(
+                        100,
+                        lambda: (
+                            progress.setVisible(False),
+                            install_btn.setEnabled(True),
+                            self._append_log("Iconos generados"),
+                        ),
+                    )
                 except Exception as e:
                     from PySide6.QtCore import QTimer
-                    QTimer.singleShot(0, lambda: info.append(f'Error generando iconos: {e}\n'))
-                    from PySide6.QtCore import QTimer
-                    QTimer.singleShot(100, lambda: (progress.setVisible(False), install_btn.setEnabled(True)))
+
+                    err_msg = str(e)
+                    QTimer.singleShot(
+                        0, lambda: info.append(f"Error generando iconos: {err_msg}\n")
+                    )
+                    QTimer.singleShot(
+                        100, lambda: (progress.setVisible(False), install_btn.setEnabled(True))
+                    )
 
             t = threading.Thread(target=run_gen, daemon=True)
             t.start()
 
-
         def show_instructions():
-            readme = str(Path(__file__).resolve().parent / "README.md")
+            # En un bundle de PyInstaller el README vive en `_MEIPASS`.
+            base = getattr(sys, "_MEIPASS", None) or str(Path(__file__).resolve().parent)
+            readme = str(Path(base) / "README.md")
             try:
                 webbrowser.open(readme)
             except Exception:
@@ -1054,6 +1185,7 @@ class MainWindow(QMainWindow):
             if ffmpeg_ok_after and ytdlp_ok_after:
                 # Llamada asíncrona para evitar reentrar en diálogos
                 from PySide6.QtCore import QTimer
+
                 QTimer.singleShot(100, lambda: self._start())
 
     def _read_urls(self) -> list[str]:
@@ -1143,7 +1275,9 @@ class MainWindow(QMainWindow):
         res_item = self.jobs_table.item(row, 4)
         if res_item:
             res_item.setText(message)
-        self._update_job_row(row, "Listo" if ok else "Falló", 100 if ok else max(self._jobs[row].progress, 0))
+        self._update_job_row(
+            row, "Listo" if ok else "Falló", 100 if ok else max(self._jobs[row].progress, 0)
+        )
 
     def _start(self):
         """Valida dependencias y entradas, y arranca el worker en hilo.
@@ -1151,12 +1285,14 @@ class MainWindow(QMainWindow):
         Realiza validaciones (FFmpeg, yt-dlp, URLs válidas) antes de lanzar
         `PipelineWorker` en un `QThread`.
         """
-        self._refresh_deps()
-        ffmpeg_ok, _ = check_ffmpeg_installed()
-        ytdlp_ok, _ = check_yt_dlp_installed()
+        self._refresh_deps(prompt_if_missing=False)
+        ffmpeg_ok, ffmpeg_msg = check_ffmpeg_installed()
+        ytdlp_ok, ytdlp_msg = check_yt_dlp_installed()
         if not ffmpeg_ok or not ytdlp_ok:
             # Mostrar diálogo para resolver dependencias desde la UI
-            self._show_missing_deps_dialog(ffmpeg_ok, "", True, ytdlp_ok, "", start_on_success=True)
+            self._show_missing_deps_dialog(
+                ffmpeg_ok, ffmpeg_msg, True, ytdlp_ok, ytdlp_msg, start_on_success=True
+            )
             return
 
         if self.subtitles_cb.isChecked():
@@ -1177,7 +1313,9 @@ class MainWindow(QMainWindow):
 
         logo_path = Path(self.logo_path_edit.text()) if self.logo_path_edit.text().strip() else None
         if self.branding_cb.isChecked() and not (logo_path and logo_path.exists()):
-            QMessageBox.warning(self, "Logo", "Activa overlay pero no has seleccionado un archivo válido")
+            QMessageBox.warning(
+                self, "Logo", "Activa overlay pero no has seleccionado un archivo válido"
+            )
             return
 
         self._populate_table(urls)

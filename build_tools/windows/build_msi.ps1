@@ -12,7 +12,7 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -m pip install cx_Freeze
 
-python packaging\windows\cxfreeze_setup.py bdist_msi
+python build_tools\windows\cxfreeze_setup.py bdist_msi
 
 Write-Host "MSI generado en dist/" -ForegroundColor Green
 

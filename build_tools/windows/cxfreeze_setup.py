@@ -4,22 +4,38 @@ from pathlib import Path
 
 from cx_Freeze import Executable, setup
 
-
 project_root = Path(__file__).resolve().parents[2]
 
 build_exe_options = {
-    "packages": [],
+    "packages": [
+        "yt_dlp",
+        "yt_dlp.extractor",
+        "yt_dlp.downloader",
+        "whisper",
+        "whisper.audio",
+        "whisper.decoding",
+        "whisper.model",
+        "whisper.transcribe",
+    ],
+    "excludes": [
+        "matplotlib",
+        "tkinter",
+        "IPython",
+        "jupyter",
+        "notebook",
+    ],
     "include_files": [
         (str(project_root / "assets"), "assets"),
         (str(project_root / "input"), "input"),
         (str(project_root / "docs"), "docs"),
+        (str(project_root / "README.md"), "."),
     ],
 }
 
 
 setup(
     name="ReelsFactoryPro",
-    version="1.1.0",
+    version="1.2.0",
     description="ReelsFactoryPro",
     options={
         "build_exe": build_exe_options,
@@ -37,4 +53,3 @@ setup(
         )
     ],
 )
-

@@ -4,9 +4,10 @@ App de escritorio macOS (Apple Silicon) para descargar TikTok (yt-dlp), procesar
 
 Herramienta profesional y totalmente funcional para descargar videos de TikTok sin watermark, procesarlos al formato óptimo para Facebook Reels, y generar subtítulos automáticos con IA.
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.11%20|%203.12%20|%203.13-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-lightgrey.svg)
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)
+![Tests](https://img.shields.io/badge/tests-29%20passing-success.svg)
 
 ---
 
@@ -29,7 +30,7 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 ## Requisitos
 
 - macOS (Apple Silicon) o Windows 10/11
-- Python 3.11 o 3.12
+- Python 3.11, 3.12 o 3.13
 - FFmpeg con soporte de subtítulos (libass)
 
 ---
@@ -39,7 +40,7 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 ### 1) Homebrew + dependencias
 
 ```bash
-brew install ffmpeg-full yt-dlp python@3.11
+brew install ffmpeg-full yt-dlp python@3.13
 ```
 
 Importante:
@@ -93,7 +94,7 @@ source ~/.zprofile
 
 ```bash
 cd /ruta/a/reels_factory
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
@@ -107,7 +108,8 @@ Alternativa (recomendada): arranque con script que auto-crea el venv si falta:
 
 Notas:
 - `requirements.txt` incluye `PySide6`, `openai-whisper` y `torch`.
-- Si `torch` falla en tu combinación exacta de macOS/Python, instala primero Python 3.11/3.12 por Homebrew y repite.
+- Si `torch` falla en tu combinación exacta de macOS/Python, instala primero Python 3.12/3.13 por Homebrew y repite.
+- También puedes instalar el proyecto en modo editable con `pip install -e ".[dev]"`.
 
 ---
 
@@ -164,11 +166,7 @@ subs = generate_subtitles(video)
 subtitle_file = subs.subtitle_path
 
 # Procesar para Reels
-final = process_for_reels(
-    input_path=video,
-    logo_path=Path("logo.png"),
-    subtitle_path=subtitle_file
-)
+final = process_for_reels(input_path=video, logo_path=Path("logo.png"), subtitle_path=subtitle_file)
 
 print(f"✓ Video listo: {final.file_path}")
 ```
@@ -203,18 +201,18 @@ En `config.py`:
 
 ```python
 # Video
-VIDEO_CODEC = "libx264"        # Codec H.264
-VIDEO_CRF = 23                 # Calidad (18-28)
-MAX_DURATION_SECONDS = 55      # Máximo 55s
+VIDEO_CODEC = "libx264"  # Codec H.264
+VIDEO_CRF = 23  # Calidad (18-28)
+MAX_DURATION_SECONDS = 55  # Máximo 55s
 
-# Subtítulos  
-MODEL_SIZE = "base"            # tiny|base|small|medium|large
-FONT_SIZE = 24                 # Tamaño fuente
-MARGIN_V = 50                  # Margen inferior
+# Subtítulos
+MODEL_SIZE = "base"  # tiny|base|small|medium|large
+FONT_SIZE = 24  # Tamaño fuente
+MARGIN_V = 50  # Margen inferior
 
 # Branding
-LOGO_WIDTH = 150               # Ancho logo px
-LOGO_OPACITY = 0.8             # Transparencia
+LOGO_WIDTH = 150  # Ancho logo px
+LOGO_OPACITY = 0.8  # Transparencia
 ```
 
 ---
@@ -323,12 +321,20 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 # Setup
 git clone <repo>
 cd reels_factory
-./run.sh --no-setup
+python3.13 -m venv .venv && source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev]"
 
 # Tests
-python -m pip install -r requirements-dev.txt
-pytest -q
+python -m pytest -q
+
+# Lint + formato
+python -m ruff check .
+python -m ruff format .
 ```
+
+La CI (`.github/workflows/ci.yml`) ejecuta los tests en Python 3.11/3.12/3.13 y
+verifica lint y formato en cada PR a `main`.
 
 ---
 
@@ -377,4 +383,4 @@ Para bugs, sugerencias o preguntas:
 
 **Creado con ❤️ por ingenieros de software para creadores de contenido**
 
-v1.0.0 - Production Ready
+v1.2.0 - Production Ready

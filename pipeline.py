@@ -5,17 +5,16 @@ Este módulo no depende de UI.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-import threading
-from typing import Callable, Optional
 
 from config import config
 from downloader import TikTokDownloader
 from processor import VideoProcessor
 from subtitles import SubtitleGenerator
 from utils import validate_tiktok_url
-
 
 ProgressFn = Callable[[int, str], None]
 LogFn = Callable[[str], None]
@@ -25,9 +24,9 @@ LogFn = Callable[[str], None]
 class PipelineSettings:
     subtitles: bool = True
     whisper_model: str = "base"
-    language: Optional[str] = None
+    language: str | None = None
     branding: bool = False
-    logo_path: Optional[Path] = None
+    logo_path: Path | None = None
     cleanup_intermediates: bool = False
 
 
@@ -39,33 +38,36 @@ class CancelledError(Exception):
 class JobResult:
     url: str
     success: bool
-    downloaded_path: Optional[Path]
-    output_path: Optional[Path]
-    error_message: Optional[str] = None
-    title: Optional[str] = None
-    hashtags: Optional[list[str]] = None
+    downloaded_path: Path | None
+    output_path: Path | None
+    error_message: str | None = None
+    title: str | None = None
+    hashtags: list[str] | None = None
 
 
 class ReelsPipeline:
     def __init__(
         self,
-        downloads_dir: Optional[Path] = None,
-        output_dir: Optional[Path] = None,
-        subtitles_dir: Optional[Path] = None,
+        downloads_dir: Path | None = None,
+        output_dir: Path | None = None,
+        subtitles_dir: Path | None = None,
     ):
         self.downloader = TikTokDownloader(downloads_dir or config.paths.DOWNLOADS_PATH)
         self.processor = VideoProcessor(output_dir or config.paths.PROCESSED_PATH)
-        self.subtitler = SubtitleGenerator(subtitles_dir or config.paths.SUBTITLES_PATH)
+        self.subtitler = SubtitleGenerator(
+            subtitles_dir or config.paths.SUBTITLES_PATH,
+            model_size=config.subtitle.MODEL_SIZE,
+        )
 
     def _calculate_progress(self, stage_start: int, stage_end: int, sub_progress: float) -> int:
         """
         Calculate overall progress based on current stage and sub-progress.
-        
+
         Args:
             stage_start: Start percentage of the current stage
             stage_end: End percentage of the current stage
             sub_progress: Progress within the stage (0-100)
-        
+
         Returns:
             Overall progress percentage
         """
@@ -76,15 +78,15 @@ class ReelsPipeline:
         self,
         url: str,
         settings: PipelineSettings,
-        progress: Optional[ProgressFn] = None,
-        log: Optional[LogFn] = None,
-        cancel_event: Optional[threading.Event] = None,
+        progress: ProgressFn | None = None,
+        log: LogFn | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> JobResult:
         def p(value: int, status: str):
             if progress:
                 progress(value, status)
 
-        def l(message: str):
+        def emit_log(message: str):
             if log:
                 log(message)
 
@@ -93,12 +95,18 @@ class ReelsPipeline:
                 raise CancelledError("Cancelado")
 
         if not validate_tiktok_url(url):
-            return JobResult(url=url, success=False, downloaded_path=None, output_path=None, error_message="URL de TikTok inválida")
+            return JobResult(
+                url=url,
+                success=False,
+                downloaded_path=None,
+                output_path=None,
+                error_message="URL de TikTok inválida",
+            )
 
         raise_if_cancelled()
 
         p(1, "Iniciando")
-        l(f"URL: {url}")
+        emit_log(f"URL: {url}")
 
         raise_if_cancelled()
 
@@ -113,18 +121,21 @@ class ReelsPipeline:
                 success=False,
                 downloaded_path=None,
                 output_path=None,
-                    error_message=dl.error_message or "Falló la descarga",
-                    title=dl.original_title,
-                    hashtags=dl.hashtags,
+                error_message=dl.error_message or "Falló la descarga",
+                title=dl.original_title,
+                hashtags=dl.hashtags,
             )
 
         downloaded_path = dl.file_path
-        l(f"Descargado: {downloaded_path.name}")
+        emit_log(f"Descargado: {downloaded_path.name}")
 
         raise_if_cancelled()
 
         subtitle_path = None
         if settings.subtitles:
+            # Respeta el modelo elegido por el usuario en la GUI.
+            if settings.whisper_model:
+                self.subtitler.model_size = settings.whisper_model
             sub = self.subtitler.generate(
                 downloaded_path,
                 language=settings.language,
@@ -137,12 +148,12 @@ class ReelsPipeline:
                     success=False,
                     downloaded_path=downloaded_path,
                     output_path=None,
-                        error_message=sub.error_message or "Falló la transcripción",
-                        title=dl.original_title,
-                        hashtags=dl.hashtags,
+                    error_message=sub.error_message or "Falló la transcripción",
+                    title=dl.original_title,
+                    hashtags=dl.hashtags,
                 )
             subtitle_path = sub.subtitle_path
-            l(f"Subtítulos: {subtitle_path.name}")
+            emit_log(f"Subtítulos: {subtitle_path.name}")
 
         raise_if_cancelled()
 
@@ -160,13 +171,13 @@ class ReelsPipeline:
                 success=False,
                 downloaded_path=downloaded_path,
                 output_path=None,
-                    error_message=out.error_message or "Falló el procesamiento",
-                    title=dl.original_title,
-                    hashtags=dl.hashtags,
+                error_message=out.error_message or "Falló el procesamiento",
+                title=dl.original_title,
+                hashtags=dl.hashtags,
             )
 
         p(100, "Listo")
-        l(f"Salida: {out.file_path}")
+        emit_log(f"Salida: {out.file_path}")
 
         if settings.cleanup_intermediates:
             try:
@@ -184,6 +195,6 @@ class ReelsPipeline:
             success=True,
             downloaded_path=downloaded_path,
             output_path=out.file_path,
-                title=dl.original_title,
-                hashtags=dl.hashtags,
+            title=dl.original_title,
+            hashtags=dl.hashtags,
         )

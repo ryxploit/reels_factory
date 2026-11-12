@@ -17,4 +17,3 @@ def settings(project_root: Path):
             ("/Applications", (640, 260)),
         ],
     }
-
