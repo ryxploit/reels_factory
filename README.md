@@ -7,31 +7,33 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 ![Python](https://img.shields.io/badge/Python-3.11%20|%203.12%20|%203.13-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-lightgrey.svg)
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)
-![Tests](https://img.shields.io/badge/tests-29%20passing-success.svg)
+![Tests](https://img.shields.io/badge/tests-134%20passing-success.svg)
 
 ---
 
 ## ✨ Características
 
-- **📥 Descarga multiplataforma** - TikTok, Instagram Reels y YouTube Shorts (sin marca de agua vía yt-dlp)  
-- **🎬 Procesamiento Profesional**
+- **📥 Descarga multiplataforma real** - TikTok, Instagram Reels y YouTube Shorts (sin marca de agua vía yt-dlp) con soporte de cookies de navegador contra bloqueos 429
+- **🎬 Procesamiento Profesional Acelerado**
   - Formato 9:16 (1080x1920) para Reels
   - Máximo 55 segundos de duración
   - Reencuadre centrado automático
-  - Codec H.264 compatible con Facebook
+  - Aceleración por hardware Apple Silicon (`h264_videotoolbox`) con fallback automático a `libx264`
   - Normalización de audio a -14 LUFS (estándar de la plataforma)
-- **🔤 Subtítulos Automáticos** - OpenAI Whisper con soporte multiidioma
-  - Resaltado de palabra activa (estilo TikTok/Shorts)
+- **🔤 Subtítulos Automáticos Robustos** - OpenAI Whisper con soporte multiidioma
+  - Resaltado de palabra activa con tolerancia a signos de puntuación (estilo TikTok/Shorts)
   - Modelos `turbo` y `large-v3-turbo`: calidad de `large-v3` a mucha mayor velocidad
   - Exportación a SRT
 - **🏷️ Branding** - Logo PNG en esquina inferior derecha
-- **🛡️ Evasión de huella digital** - Altera la huella perceptual de vídeo y audio
+- **🛡️ Evasión de huella digital precisa** - Sincronía A/V perfecta (`setpts` + `atempo`), desplazamiento gamma, microdesplazamiento de encuadre y EQ
 - **🔍 Detección de marca de agua** - Te muestra la zona sospechosa para confirmarla
-- **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas y logs
+- **⚡ Pre-fetching de lotes** - Descarga anticipada del siguiente trabajo mientras se procesa el actual
+- **📊 Exportación de informes** - Exporta el historial de lote a CSV o JSON
+- **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas, logs y controles completos
 - **💾 Preferencias persistentes** - Tus opciones se recuerdan entre sesiones
 - **🔁 Cola persistente** - Reanuda tras un cierre inesperado y reintenta los fallidos
-- **⚡ Optimizado para Apple Silicon** - M1/M2/M3 nativamente
-- **🔧 Modular y escalable** - Código limpio, reutilizable
+- **⚡ Optimizado para Apple Silicon** - M1/M2/M3/M4 nativamente
+- **🔧 Modular y escalable** - Código limpio, reutilizable y 100% testeado
 - **✅ Verificación del resultado** - Avisa si el vídeo no cumple las specs de la plataforma
 
 ---

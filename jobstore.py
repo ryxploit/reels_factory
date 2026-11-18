@@ -172,5 +172,35 @@ class JobStore:
             self.jobs = []
         self.path.unlink(missing_ok=True)
 
+    def export_report(self, dest_path: Path, fmt: str = "csv") -> Path:
+        """Exporta los trabajos de la cola a un archivo CSV o JSON."""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            jobs_data = [asdict(job) for job in self.jobs]
+
+        if fmt.lower() == "json" or dest_path.suffix.lower() == ".json":
+            dest_path.write_text(
+                json.dumps(jobs_data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        else:
+            import csv
+
+            fieldnames = [
+                "url",
+                "status",
+                "title",
+                "hashtags",
+                "output_path",
+                "error_message",
+                "result",
+            ]
+            with open(dest_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for item in jobs_data:
+                    writer.writerow({k: item.get(k, "") for k in fieldnames})
+
+        return dest_path
+
     def __len__(self) -> int:
         return len(self.jobs)

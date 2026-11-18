@@ -5,6 +5,28 @@ Todas las versiones relevantes de ReelsFactoryPro.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el versionado sigue [SemVer](https://semver.org/lang/es/).
 
+## [1.5.0] - 2026-11-14
+
+### Añadido
+
+- **Soporte multiplataforma completo**: descarga y procesa URLs de TikTok, Instagram Reels y YouTube Shorts sin bloqueos de validación en `downloader.py` y `pipeline.py`.
+- **Aceleración por hardware Apple Silicon (VideoToolbox)**: codificación nativa `h264_videotoolbox` en macOS (de 3x a 6x más rápida, reduciendo consumo de CPU/batería) con fallback automático a `libx264`.
+- **Pre-fetching concurrente en la cola**: descarga anticipada en segundo plano del siguiente vídeo del lote mientras se transcriben y renderizan los subtítulos del actual.
+- **Exportación de informes de lote**: exporta la tabla de trabajos con URLs, metadatos, títulos, hashtags y rutas de salida a CSV o JSON.
+- **Soporte de cookies de navegador en yt-dlp**: permite extraer cookies de navegadores (Chrome, Safari, Firefox, Edge, etc.) para eludir bloqueos 429 y desafíos de bots.
+- **Limpieza de fragmentos huérfanos**: elimina automáticamente archivos parciales (`.part`, `.ytdl`) tras fallos o cancelaciones.
+
+### Corregido
+
+- **Evasión de huella de vídeo omitida**: `build_video_filter_chain()` no incorporaba los filtros de vídeo (`setpts`, `gamma`, `mirror`) en la cadena FFmpeg.
+- **Desincronización Audio/Vídeo en evasión de velocidad**: la fórmula de `setpts` ralentizaba el vídeo mientras que `atempo` aceleraba el audio. Corregido para sincronía milimétrica.
+- **Robustez en resaltado de palabra activa**: tolerancia a puntuaciones periféricas y diferencias de capitalización en `_word_highlight_dialogues()` para evitar etiquetas ASS rotas.
+
+### Calidad
+
+- 135 tests pasando (12 nuevos tests de regresión y cobertura de mejoras).
+- Ruff check y ruff format limpios.
+
 ## [1.4.1] - 2026-11-12
 
 ### Corregido

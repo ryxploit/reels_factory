@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reels-factory"
-version = "1.4.1"
+version = "1.5.0"
 description = "Descarga de TikTok, procesado a Facebook Reels y subtítulos automáticos con Whisper."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import config
-from downloader import TikTokDownloader
+from downloader import DownloadResult, TikTokDownloader
 from processor import VideoProcessor
 from subtitles import SubtitleGenerator
-from utils import validate_tiktok_url
+from utils import validate_video_url
 
 ProgressFn = Callable[[int, str], None]
 LogFn = Callable[[str], None]
@@ -31,6 +31,7 @@ class PipelineSettings:
     word_highlight: bool = True
     loudnorm: bool = True
     evasion: bool = True
+    hardware_accel: bool = True
 
 
 class CancelledError(Exception):
@@ -91,6 +92,7 @@ class ReelsPipeline:
         progress: ProgressFn | None = None,
         log: LogFn | None = None,
         cancel_event: threading.Event | None = None,
+        prefetched_download: DownloadResult | None = None,
     ) -> JobResult:
         def p(value: int, status: str):
             if progress:
@@ -104,13 +106,13 @@ class ReelsPipeline:
             if cancel_event and cancel_event.is_set():
                 raise CancelledError("Cancelado")
 
-        if not validate_tiktok_url(url):
+        if not validate_video_url(url):
             return JobResult(
                 url=url,
                 success=False,
                 downloaded_path=None,
                 output_path=None,
-                error_message="URL de TikTok inválida",
+                error_message="URL de vídeo inválida o no soportada (TikTok, Instagram Reels, YouTube Shorts)",
             )
 
         raise_if_cancelled()
@@ -120,11 +122,21 @@ class ReelsPipeline:
 
         raise_if_cancelled()
 
-        dl = self.downloader.download(
-            url,
-            progress_callback=lambda c, _t, s: p(self._calculate_progress(1, 35, c), s),
-            cancel_event=cancel_event,
-        )
+        # Si ya se descargó previamente de forma concurrente, reutilizar el resultado
+        if (
+            prefetched_download
+            and prefetched_download.success
+            and prefetched_download.file_path
+            and prefetched_download.file_path.exists()
+        ):
+            dl = prefetched_download
+            p(35, "Descarga completada (anticipada)")
+        else:
+            dl = self.downloader.download(
+                url,
+                progress_callback=lambda c, _t, s: p(self._calculate_progress(1, 35, c), s),
+                cancel_event=cancel_event,
+            )
         if not dl.success or not dl.file_path:
             return JobResult(
                 url=url,
@@ -174,6 +186,8 @@ class ReelsPipeline:
         self.processor.video_config.ENABLE_LOUDNORM = settings.loudnorm
         # La evasión de huella digital se controla por trabajo.
         self.processor.evasion_enabled = settings.evasion
+        # Aceleración por hardware
+        self.processor.hw_accel_enabled = settings.hardware_accel
         out = self.processor.process(
             input_path=downloaded_path,
             logo_path=logo_path,

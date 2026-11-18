@@ -311,6 +311,25 @@ def check_yt_dlp_installed() -> tuple[bool, str]:
         return False, "yt-dlp no disponible. Instala con: pip install yt-dlp"
 
 
+@lru_cache(maxsize=1)
+def check_videotoolbox_support() -> bool:
+    """Comprueba si el FFmpeg instalado soporta aceleración por hardware con h264_videotoolbox."""
+    try:
+        import sys
+
+        if sys.platform != "darwin":
+            return False
+        bins = resolve_binaries()
+        if not bins.ffmpeg:
+            return False
+        result = subprocess.run(
+            [str(bins.ffmpeg), "-encoders"], capture_output=True, text=True, timeout=5
+        )
+        return "h264_videotoolbox" in (result.stdout or "")
+    except Exception:
+        return False
+
+
 def get_video_info(file_path: Path) -> dict | None:
     """
     Get video information using FFprobe.

@@ -93,6 +93,14 @@ def test_build_video_filter_chain_respects_target_size():
     assert "scale=1080:1920" in chain[-1]
 
 
+def test_build_video_filter_chain_includes_video_profile_filters():
+    profile = EvasionProfile(enable_speed_change=True, enable_gamma_shift=True)
+    chain = build_video_filter_chain([], profile, 1080, 1920)
+    joined = " ".join(chain)
+    assert "setpts=" in joined
+    assert "gamma=" in joined
+
+
 def test_summary_lists_applied_techniques():
     profile = default_profile()
     summary = profile.summary()

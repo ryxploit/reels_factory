@@ -16,6 +16,7 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -29,6 +30,7 @@ from evasion import EvasionProfile, build_video_filter_chain, default_profile
 from utils import (
     ProgressCallback,
     check_ffmpeg_subtitles_support,
+    check_videotoolbox_support,
     generate_unique_filename,
     get_video_info,
     setup_logger,
@@ -79,6 +81,8 @@ class VideoProcessor:
         # Evasión de huella digital perceptual.
         self.evasion_enabled: bool = True
         self.evasion_profile: EvasionProfile = default_profile()
+        # Aceleración por hardware (VideoToolbox en macOS)
+        self.hw_accel_enabled: bool = getattr(config.video, "USE_HARDWARE_ACCELERATION", True)
 
     def _calculate_crop_filter(
         self, input_width: int, input_height: int, target_width: int, target_height: int
@@ -334,27 +338,50 @@ class VideoProcessor:
         """
         cmd = []
 
-        # Video codec settings (H.264 compatible with Facebook)
-        cmd.extend(
-            [
-                "-c:v",
-                self.video_config.VIDEO_CODEC,
-                "-preset",
-                self.video_config.VIDEO_PRESET,
-                "-b:v",
-                self.video_config.VIDEO_BITRATE,
-                "-maxrate",
-                self.video_config.VIDEO_MAXRATE,
-                "-bufsize",
-                self.video_config.VIDEO_BUFSIZE,
-                "-profile:v",
-                self.video_config.VIDEO_PROFILE,
-                "-level",
-                self.video_config.VIDEO_LEVEL,
-                "-pix_fmt",
-                self.video_config.PIXEL_FORMAT,
-            ]
+        # Video codec settings: aceleración por hardware VideoToolbox en macOS si está disponible
+        use_videotoolbox = (
+            self.hw_accel_enabled and sys.platform == "darwin" and check_videotoolbox_support()
         )
+        if use_videotoolbox:
+            cmd.extend(
+                [
+                    "-c:v",
+                    "h264_videotoolbox",
+                    "-b:v",
+                    self.video_config.VIDEO_BITRATE,
+                    "-maxrate",
+                    self.video_config.VIDEO_MAXRATE,
+                    "-bufsize",
+                    self.video_config.VIDEO_BUFSIZE,
+                    "-profile:v",
+                    self.video_config.VIDEO_PROFILE,
+                    "-level",
+                    self.video_config.VIDEO_LEVEL,
+                    "-pix_fmt",
+                    self.video_config.PIXEL_FORMAT,
+                ]
+            )
+        else:
+            cmd.extend(
+                [
+                    "-c:v",
+                    self.video_config.VIDEO_CODEC,
+                    "-preset",
+                    self.video_config.VIDEO_PRESET,
+                    "-b:v",
+                    self.video_config.VIDEO_BITRATE,
+                    "-maxrate",
+                    self.video_config.VIDEO_MAXRATE,
+                    "-bufsize",
+                    self.video_config.VIDEO_BUFSIZE,
+                    "-profile:v",
+                    self.video_config.VIDEO_PROFILE,
+                    "-level",
+                    self.video_config.VIDEO_LEVEL,
+                    "-pix_fmt",
+                    self.video_config.PIXEL_FORMAT,
+                ]
+            )
 
         # Audio codec settings
         cmd.extend(

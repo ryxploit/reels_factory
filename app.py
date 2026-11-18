@@ -9,9 +9,10 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QIcon, QPixmap
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,12 +26,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -63,6 +66,56 @@ class UiJob:
     title: str = ""
     hashtags: str = ""
     thumbnail_path: str = ""
+
+
+class DropUrlsTextEdit(QTextEdit):
+    """QTextEdit con soporte para arrastrar y soltar archivos de texto con URLs."""
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            files = [
+                u.toLocalFile()
+                for u in event.mimeData().urls()
+                if u.toLocalFile().lower().endswith((".txt", ".urls", ".csv", ".log"))
+            ]
+            if files:
+                lines: list[str] = []
+                for f in files:
+                    try:
+                        lines.extend(
+                            [
+                                line.strip()
+                                for line in Path(f)
+                                .read_text(encoding="utf-8", errors="ignore")
+                                .splitlines()
+                                if line.strip()
+                            ]
+                        )
+                    except Exception:
+                        pass
+                if lines:
+                    current = self.toPlainText().strip()
+                    new_text = (
+                        (current + "\n" + "\n".join(lines)).strip()
+                        if current
+                        else "\n".join(lines)
+                    )
+                    self.setPlainText(new_text)
+                    event.acceptProposedAction()
+                    return
+        super().dropEvent(event)
 
 
 class PipelineWorker(QObject):
@@ -119,6 +172,18 @@ class PipelineWorker(QObject):
         interfaz usa para actualizar la tabla, barra de progreso y logs.
         """
         total = len(self._urls)
+        prefetched_result: dict[str, Any] = {}
+        prefetch_thread: threading.Thread | None = None
+
+        def do_prefetch(target_url: str):
+            try:
+                res = self._pipeline.downloader.download(
+                    target_url, cancel_event=self._cancel_event
+                )
+                prefetched_result[target_url] = res
+            except Exception:
+                pass
+
         try:
             for idx, url in enumerate(self._urls):
                 if self._cancel_event.is_set():
@@ -129,6 +194,21 @@ class PipelineWorker(QObject):
                 self.job_update.emit(idx, "En curso", 0)
                 self.log.emit(f"Iniciando job {idx + 1}/{total}")
                 self._persist(url, status="En curso")
+
+                # Si hubo pre-descarga previa para este URL, recogerla
+                prefetched_dl = prefetched_result.get(url)
+
+                # Si hay siguiente trabajo en la cola, iniciar su descarga anticipada
+                if (
+                    idx + 1 < total
+                    and getattr(config.download, "PREFETCH_NEXT", True)
+                    and not self._cancel_event.is_set()
+                ):
+                    next_url = self._urls[idx + 1]
+                    prefetch_thread = threading.Thread(
+                        target=do_prefetch, args=(next_url,), daemon=True
+                    )
+                    prefetch_thread.start()
 
                 def progress_cb(value: int, status: str, idx: int = idx):
                     self.job_update.emit(idx, status, value)
@@ -145,6 +225,7 @@ class PipelineWorker(QObject):
                         progress=progress_cb,
                         log=log_cb,
                         cancel_event=self._cancel_event,
+                        prefetched_download=prefetched_dl,
                     )
                 except CancelledError:
                     self.job_done.emit(idx, False, "Cancelado")
@@ -284,6 +365,12 @@ class MainWindow(QMainWindow):
         self.word_highlight_cb.setChecked(saved.word_highlight)
         self.loudnorm_cb.setChecked(saved.loudnorm)
         self.evasion_cb.setChecked(saved.evasion)
+        self.hw_accel_cb.setChecked(saved.hardware_accel)
+
+        if saved.cookies_browser:
+            idx = self.cookies_combo.findData(saved.cookies_browser)
+            if idx != -1:
+                self.cookies_combo.setCurrentIndex(idx)
 
         if saved.logo_path and Path(saved.logo_path).exists():
             self.logo_path_edit.setText(saved.logo_path)
@@ -302,134 +389,228 @@ class MainWindow(QMainWindow):
             word_highlight=self.word_highlight_cb.isChecked(),
             loudnorm=self.loudnorm_cb.isChecked(),
             evasion=self.evasion_cb.isChecked(),
+            hardware_accel=self.hw_accel_cb.isChecked(),
+            cookies_browser=self.cookies_combo.currentData() or "",
         )
         self._settings_store.save(settings)
 
     def _apply_theme(self):
-        """Aplica el tema oscuro y las reglas de estilo visual.
-
-        Centraliza las `setStyleSheet` para mantener la UI consistente
-        sin tocar la disposición o comportamiento de los widgets.
-        """
+        """Aplica el tema oscuro refinado y las reglas de estilo visual modernas."""
         self.setStyleSheet(
             """
             QWidget {
-                background-color: #0A0F1E;
-                color: #E5E7EB;
+                background-color: #080C16;
+                color: #E2E8F0;
+                font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
                 font-size: 13px;
             }
             QMainWindow {
-                background-color: #0A0F1E;
+                background-color: #080C16;
             }
             QLabel[role="muted"] {
-                color: #A0AEC0;
+                color: #94A3B8;
+                font-size: 12px;
             }
             QLabel[role="badge"] {
-                background: #111827;
-                color: #7DD3FC;
-                border: 1px solid #23304A;
+                background: #111C33;
+                color: #38BDF8;
+                border: 1px solid #1E2D4A;
                 border-radius: 8px;
-                padding: 2px 8px;
-                font-weight: 600;
+                padding: 3px 10px;
+                font-weight: 700;
+                font-size: 11px;
+            }
+            QLabel[role="tag"] {
+                background: #1E293B;
+                color: #CBD5E1;
+                border-radius: 6px;
+                padding: 2px 6px;
+                font-size: 10px;
             }
             QGroupBox {
-                background: #0F172A;
-                border: 1px solid #1E293B;
-                border-radius: 14px;
-                margin-top: 14px;
-                padding: 12px;
+                background: #0E1424;
+                border: 1px solid #1A2438;
+                border-radius: 12px;
+                margin-top: 12px;
+                padding: 10px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 6px;
                 color: #7DD3FC;
-                font-weight: 600;
+                font-weight: 700;
+                font-size: 12px;
             }
             QLineEdit, QTextEdit, QComboBox {
-                background: #0B1224;
-                border: 1px solid #22304A;
-                border-radius: 12px;
-                padding: 6px 8px;
+                background: #0B101E;
+                border: 1px solid #1E2D4A;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #F1F5F9;
+                selection-background-color: #2563EB;
             }
             QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
                 border: 1px solid #38BDF8;
+                background: #0E1528;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 18px;
+                width: 20px;
+                padding-right: 4px;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #E2E8F0;
             }
             QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
+                width: 17px;
+                height: 17px;
+                border-radius: 4px;
+                border: 1px solid #2A3C5E;
+                background: #0B101E;
+            }
+            QCheckBox::indicator:checked {
+                background: #2563EB;
+                border: 1px solid #38BDF8;
             }
             QPushButton {
-                background: #2563EB;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563EB, stop:1 #4F46E5);
                 border: none;
-                border-radius: 12px;
-                padding: 8px 14px;
+                border-radius: 8px;
+                padding: 7px 14px;
                 color: white;
                 font-weight: 600;
             }
             QPushButton:hover {
-                background: #1E40AF;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3B82F6, stop:1 #6366F1);
+            }
+            QPushButton:pressed {
+                background: #1D4ED8;
             }
             QPushButton:disabled {
-                background: #334155;
-                color: #94A3B8;
+                background: #1E293B;
+                color: #64748B;
             }
             QPushButton#ghost {
-                background: #0B1224;
-                border: 1px solid #22304A;
-                color: #E5E7EB;
+                background: #0E1528;
+                border: 1px solid #1E2D4A;
+                color: #E2E8F0;
+                font-weight: 500;
             }
             QPushButton#ghost:hover {
                 border-color: #38BDF8;
                 color: #7DD3FC;
+                background: #131E35;
             }
+            QPushButton#ghost:pressed {
+                background: #0B101E;
+            }
+            QPushButton#danger {
+                background: #7F1D1D;
+                border: 1px solid #991B1B;
+                color: #FECACA;
+            }
+            QPushButton#danger:hover {
+                background: #991B1B;
+            }
+            /* QTabWidget */
+            QTabWidget::pane {
+                border: 1px solid #1A2438;
+                border-radius: 8px;
+                background: #0E1424;
+                top: -1px;
+                padding: 8px;
+            }
+            QTabBar::tab {
+                background: #0B101E;
+                color: #94A3B8;
+                padding: 6px 14px;
+                margin-right: 4px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                font-weight: 600;
+                font-size: 11px;
+                border: 1px solid transparent;
+            }
+            QTabBar::tab:selected {
+                background: #0E1424;
+                color: #38BDF8;
+                border: 1px solid #1A2438;
+                border-bottom: 2px solid #38BDF8;
+            }
+            QTabBar::tab:hover:!selected {
+                color: #F1F5F9;
+                background: #111A2E;
+            }
+            /* Barra de progreso */
             QProgressBar {
-                background: #0B1224;
-                border: 1px solid #22304A;
-                border-radius: 10px;
-                height: 16px;
+                background: #0B101E;
+                border: 1px solid #1E2D4A;
+                border-radius: 7px;
+                height: 14px;
                 text-align: center;
-                color: #E5E7EB;
+                color: #F1F5F9;
+                font-size: 10px;
+                font-weight: 700;
             }
             QProgressBar::chunk {
-                background: #38BDF8;
-                border-radius: 9px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #38BDF8, stop:1 #6366F1);
+                border-radius: 6px;
             }
+            /* Tabla */
             QTableWidget {
-                background: #0B1224;
-                border: 1px solid #22304A;
-                border-radius: 12px;
-                gridline-color: #1E293B;
-                selection-background-color: #1E293B;
-                selection-color: #E5E7EB;
+                background: #0B101E;
+                border: 1px solid #1A2438;
+                border-radius: 10px;
+                gridline-color: #141C2C;
+                selection-background-color: #1A2D4E;
+                selection-color: #F8FAFC;
             }
             QHeaderView::section {
-                background: #0F172A;
-                color: #A0AEC0;
+                background: #0E1424;
+                color: #94A3B8;
                 border: none;
-                padding: 6px;
-                font-weight: 600;
+                border-bottom: 1px solid #1A2438;
+                padding: 6px 8px;
+                font-weight: 700;
+                font-size: 11px;
             }
-            QTextEdit {
-                background: #0B1224;
+            /* Menú contextual */
+            QMenu {
+                background-color: #0E1424;
+                border: 1px solid #1E2D4A;
+                border-radius: 8px;
+                padding: 4px;
             }
+            QMenu::item {
+                padding: 6px 20px;
+                color: #E2E8F0;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #2563EB;
+                color: #FFFFFF;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #1E2D4A;
+                margin: 4px 0;
+            }
+            /* Scrollbars */
             QScrollBar:vertical {
-                background: #0B1224;
-                width: 10px;
-                margin: 2px 2px 2px 2px;
-                border-radius: 5px;
+                background: transparent;
+                width: 8px;
+                margin: 2px;
+                border-radius: 4px;
             }
             QScrollBar::handle:vertical {
-                background: #22304A;
-                min-height: 20px;
-                border-radius: 5px;
+                background: #1E2D4A;
+                min-height: 24px;
+                border-radius: 4px;
             }
             QScrollBar::handle:vertical:hover {
-                background: #334155;
+                background: #33476E;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
@@ -500,31 +681,45 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_import_box(self) -> QGroupBox:
-        """Construye el área para importar o pegar URLs.
-
-        Incluye el `QTextEdit` para pegar URLs y botones para importar
-        desde archivo o limpiar el contenido.
-        """
-        box = QGroupBox("Importar URLs de TikTok")
+        """Construye el área para importar o pegar URLs."""
+        box = QGroupBox("📥 Entrada de URLs (TikTok / Reels / Shorts)")
         layout = QVBoxLayout(box)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
-        self.urls_text = QTextEdit()
-        self.urls_text.setPlaceholderText("Una URL por línea")
-        self.urls_text.setMinimumHeight(160)
-        self.urls_text.setToolTip("Pega aquí las URLs que quieres procesar, una por línea.")
+        self.urls_text = DropUrlsTextEdit()
+        self.urls_text.setPlaceholderText(
+            "Pega aquí URLs (una por línea) o arrastra un archivo .txt aquí..."
+        )
+        self.urls_text.setMinimumHeight(140)
+        self.urls_text.setToolTip(
+            "Admite enlaces de TikTok, Instagram Reels y YouTube Shorts. También puedes arrastrar archivos .txt directamente."
+        )
+        self.urls_text.textChanged.connect(self._on_urls_changed)
         layout.addWidget(self.urls_text)
 
+        self.urls_count_label = QLabel("Sin URLs introducidas")
+        self.urls_count_label.setStyleSheet("color: #64748B; font-size: 11px;")
+        layout.addWidget(self.urls_count_label)
+
         buttons = QHBoxLayout()
-        self.import_file_btn = QPushButton("Importar .txt")
+        buttons.setSpacing(6)
+
+        self.paste_urls_btn = QPushButton("📋 Pegar")
+        self.paste_urls_btn.setObjectName("ghost")
+        self.paste_urls_btn.setToolTip("Pega el contenido del portapapeles.")
+        self.paste_urls_btn.clicked.connect(self._paste_from_clipboard)
+
+        self.import_file_btn = QPushButton("Cargar .txt")
         self.import_file_btn.setObjectName("ghost")
         self.import_file_btn.setToolTip("Carga un archivo .txt con una URL por línea.")
         self.import_file_btn.clicked.connect(self._import_urls_file)
+
         self.clear_urls_btn = QPushButton("Limpiar")
         self.clear_urls_btn.setObjectName("ghost")
         self.clear_urls_btn.setToolTip("Borra todas las URLs del cuadro de texto.")
         self.clear_urls_btn.clicked.connect(self.urls_text.clear)
 
+        buttons.addWidget(self.paste_urls_btn)
         buttons.addWidget(self.import_file_btn)
         buttons.addWidget(self.clear_urls_btn)
         buttons.addStretch(1)
@@ -532,102 +727,186 @@ class MainWindow(QMainWindow):
 
         return box
 
+    def _paste_from_clipboard(self):
+        """Pega texto desde el portapapeles en el campo de URLs."""
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            self.statusBar().showMessage("El portapapeles está vacío", 2000)
+            return
+        current = self.urls_text.toPlainText().strip()
+        merged = (current + "\n" + text.strip()).strip() if current else text.strip()
+        self.urls_text.setPlainText(merged)
+        self.statusBar().showMessage("URLs pegadas desde el portapapeles", 2000)
+
+    def _on_urls_changed(self):
+        """Actualiza el contador dinámico de URLs válidas y por plataforma."""
+        urls = self._read_urls()
+        if not urls:
+            self.urls_count_label.setText("Sin URLs introducidas")
+            self.urls_count_label.setStyleSheet("color: #64748B; font-size: 11px;")
+            return
+
+        valid = [u for u in urls if validate_video_url(u)]
+        invalid = [u for u in urls if not validate_video_url(u)]
+
+        platforms: dict[str, int] = {}
+        for u in valid:
+            p = detect_platform(u) or "otro"
+            platforms[p] = platforms.get(p, 0) + 1
+
+        summary = ", ".join(f"{cnt} {pl.capitalize()}" for pl, cnt in sorted(platforms.items()))
+
+        if invalid:
+            self.urls_count_label.setText(
+                f"✓ {len(valid)} válidas ({summary})  |  ⚠️ {len(invalid)} no soportadas"
+            )
+            self.urls_count_label.setStyleSheet(
+                "color: #FBBF24; font-size: 11px; font-weight: 600;"
+            )
+        else:
+            self.urls_count_label.setText(f"✓ {len(valid)} URLs listas ({summary})")
+            self.urls_count_label.setStyleSheet(
+                "color: #38BDF8; font-size: 11px; font-weight: 600;"
+            )
+
     def _build_settings_box(self) -> QGroupBox:
-        """Construye el panel de opciones de procesamiento.
-
-        Aquí el usuario puede activar subtítulos, seleccionar modelo e idioma,
-        añadir branding (logo) y decidir si limpiar temporales.
-        """
-        box = QGroupBox("Opciones")
+        """Construye el panel de opciones organizado en pestañas limpias."""
+        box = QGroupBox("Opciones de Procesamiento")
         layout = QVBoxLayout(box)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
+        layout.setContentsMargins(8, 12, 8, 8)
 
-        self.subtitles_cb = QCheckBox("Generar subtítulos (Whisper)")
+        tabs = QTabWidget()
+
+        # Tab 1: Subtítulos
+        subs_tab = QWidget()
+        subs_layout = QVBoxLayout(subs_tab)
+        subs_layout.setSpacing(8)
+
+        self.subtitles_cb = QCheckBox("Generar subtítulos con Whisper")
         self.subtitles_cb.setChecked(True)
-        self.subtitles_cb.setToolTip("Activa la generación automática de subtítulos con Whisper.")
+        self.subtitles_cb.setToolTip("Activa la transcripción y subtítulos automáticos con Whisper.")
 
         model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Modelo"))
+        model_row.addWidget(QLabel("Modelo:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(list(config.subtitle.AVAILABLE_MODELS))
         self.model_combo.setCurrentText(config.subtitle.MODEL_SIZE)
         self.model_combo.setToolTip(
-            "Tamaño del modelo de transcripción. "
-            "'turbo' y 'large-v3-turbo' son tan precisos como 'large-v3' pero mucho más rápidos."
+            "Tamaño del modelo Whisper ('turbo' recomendado en Apple Silicon)."
         )
-        model_row.addWidget(self.model_combo)
-        model_row.addStretch(1)
+        model_row.addWidget(self.model_combo, 1)
 
-        lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Idioma"))
+        model_row.addWidget(QLabel("Idioma:"))
         self.language_combo = QComboBox()
         self.language_combo.addItem("auto", userData=None)
         for code in ["es", "en", "pt", "fr", "de", "it"]:
             self.language_combo.addItem(code, userData=code)
-        self.language_combo.setToolTip("Define el idioma del audio o usa auto para detectar.")
-        lang_row.addWidget(self.language_combo)
-        lang_row.addStretch(1)
+        self.language_combo.setToolTip("Idioma del audio o 'auto' para auto-detección.")
+        model_row.addWidget(self.language_combo, 1)
 
-        self.word_highlight_cb = QCheckBox("Resaltar palabra activa")
+        self.word_highlight_cb = QCheckBox("Resaltar palabra activa (estilo TikTok / Shorts)")
         self.word_highlight_cb.setChecked(config.subtitle.ENABLE_WORD_HIGHLIGHT)
         self.word_highlight_cb.setToolTip(
-            "Estilo TikTok/Shorts: la palabra que se pronuncia se resalta y agranda."
+            "La palabra que se pronuncia cambia de color y crece ligeramente."
         )
 
-        self.loudnorm_cb = QCheckBox("Normalizar audio (-14 LUFS)")
+        self.loudnorm_cb = QCheckBox("Normalizar audio a -14 LUFS (estándar de plataforma)")
         self.loudnorm_cb.setChecked(config.video.ENABLE_LOUDNORM)
         self.loudnorm_cb.setToolTip(
             "Iguala el volumen al estándar de Facebook/TikTok para evitar penalizaciones."
         )
 
-        self.evasion_cb = QCheckBox("Evasión de huella digital")
+        subs_layout.addWidget(self.subtitles_cb)
+        subs_layout.addLayout(model_row)
+        subs_layout.addWidget(self.word_highlight_cb)
+        subs_layout.addWidget(self.loudnorm_cb)
+        subs_layout.addStretch(1)
+
+        # Tab 2: Evasión & Marca
+        evasion_tab = QWidget()
+        evasion_layout = QVBoxLayout(evasion_tab)
+        evasion_layout.setSpacing(8)
+
+        self.evasion_cb = QCheckBox("Evasión de huella digital perceptual (vídeo + audio)")
         self.evasion_cb.setChecked(config.fingerprint.ENABLE_FRAME_SHIFT)
         self.evasion_cb.setToolTip(
-            "Altera la huella perceptual del vídeo y del audio para que un "
-            "reupload no coincida con el original. Úsalo al republicar tu "
-            "propio contenido en varias plataformas."
+            "Altera la huella perceptual de vídeo y audio para que el reupload no coincida con el original."
         )
 
-        self.analyze_btn = QPushButton("Analizar marca de agua")
+        analyze_row = QHBoxLayout()
+        self.analyze_btn = QPushButton("🔍 Analizar marca de agua en vídeo")
         self.analyze_btn.setObjectName("ghost")
         self.analyze_btn.setToolTip(
-            "Analiza el vídeo descargado en busca de marcas de agua incrustadas "
-            "en los píxeles (no en los metadatos)."
+            "Analiza el vídeo descargado buscando marcas de agua fijas en los píxeles."
         )
         self.analyze_btn.clicked.connect(self._analyze_watermark)
-        analyze_row = QHBoxLayout()
-        analyze_row.addWidget(self.evasion_cb)
-        analyze_row.addStretch(1)
         analyze_row.addWidget(self.analyze_btn)
+        analyze_row.addStretch(1)
 
-        self.branding_cb = QCheckBox("Añadir overlay (logo)")
+        self.branding_cb = QCheckBox("Añadir logo overlay (branding)")
         self.branding_cb.setChecked(False)
-        self.branding_cb.setToolTip("Coloca tu logo como overlay en el video final.")
-
-        self.cleanup_cb = QCheckBox("Eliminar temporales al finalizar")
-        self.cleanup_cb.setChecked(False)
-        self.cleanup_cb.setToolTip("Elimina archivos temporales al terminar para ahorrar espacio.")
+        self.branding_cb.setToolTip("Coloca un logo PNG en la esquina inferior derecha.")
 
         logo_row = QHBoxLayout()
         self.logo_path_edit = QLineEdit()
-        self.logo_path_edit.setPlaceholderText("Selecciona un PNG con transparencia")
+        self.logo_path_edit.setPlaceholderText("Selecciona un archivo PNG con transparencia")
         self.logo_path_edit.setReadOnly(True)
-        self.logo_path_edit.setToolTip("Ruta del logo que se usará como overlay.")
-        self.logo_btn = QPushButton("Elegir")
-        self.logo_btn.setToolTip("Selecciona el archivo de logo para el overlay.")
+        self.logo_btn = QPushButton("Elegir...")
+        self.logo_btn.setObjectName("ghost")
         self.logo_btn.clicked.connect(self._pick_logo)
         logo_row.addWidget(self.logo_path_edit, 1)
         logo_row.addWidget(self.logo_btn)
 
-        layout.addWidget(self.subtitles_cb)
-        layout.addLayout(model_row)
-        layout.addLayout(lang_row)
-        layout.addWidget(self.word_highlight_cb)
-        layout.addWidget(self.loudnorm_cb)
-        layout.addLayout(analyze_row)
-        layout.addWidget(self.branding_cb)
-        layout.addLayout(logo_row)
-        layout.addWidget(self.cleanup_cb)
+        evasion_layout.addWidget(self.evasion_cb)
+        evasion_layout.addLayout(analyze_row)
+        evasion_layout.addWidget(self.branding_cb)
+        evasion_layout.addLayout(logo_row)
+        evasion_layout.addStretch(1)
+
+        # Tab 3: Rendimiento & Red
+        perf_tab = QWidget()
+        perf_layout = QVBoxLayout(perf_tab)
+        perf_layout.setSpacing(8)
+
+        self.hw_accel_cb = QCheckBox("Aceleración hardware Apple Silicon (VideoToolbox)")
+        self.hw_accel_cb.setChecked(getattr(config.video, "USE_HARDWARE_ACCELERATION", True))
+        self.hw_accel_cb.setToolTip(
+            "Codificación por hardware 3x-6x más rápida con h264_videotoolbox."
+        )
+
+        cookies_row = QHBoxLayout()
+        cookies_row.addWidget(QLabel("Cookies navegador:"))
+        self.cookies_combo = QComboBox()
+        self.cookies_combo.addItem("Desactivado", userData=None)
+        for b in ["chrome", "safari", "firefox", "edge", "opera", "brave"]:
+            self.cookies_combo.addItem(b.capitalize(), userData=b)
+        self.cookies_combo.setToolTip(
+            "Pasa cookies del navegador a yt-dlp para eludir bloqueos 429 o de bot."
+        )
+        cookies_row.addWidget(self.cookies_combo, 1)
+
+        self.cleanup_cb = QCheckBox("Eliminar archivos temporales al terminar")
+        self.cleanup_cb.setChecked(False)
+        self.cleanup_cb.setToolTip(
+            "Ahorra espacio eliminando descargas intermedias y archivos .ass."
+        )
+
+        perf_layout.addWidget(self.hw_accel_cb)
+        perf_layout.addLayout(cookies_row)
+        perf_layout.addWidget(self.cleanup_cb)
+        perf_layout.addStretch(1)
+
+        tabs.addTab(subs_tab, "🔤 Subtítulos")
+        tabs.addTab(evasion_tab, "🛡️ Evasión")
+        tabs.addTab(perf_tab, "⚡ Rendimiento")
+        layout.addWidget(tabs)
+
+        self.subtitles_cb.toggled.connect(self._sync_option_states)
+        self.branding_cb.toggled.connect(self._sync_option_states)
+        self._sync_option_states()
+
+        return box
 
         self.subtitles_cb.toggled.connect(self._sync_option_states)
         self.branding_cb.toggled.connect(self._sync_option_states)
@@ -823,12 +1102,57 @@ class MainWindow(QMainWindow):
         self.retry_btn.clicked.connect(self._retry_failed)
         self.retry_btn.setEnabled(False)
 
+        self.export_report_btn = QPushButton("Exportar reporte")
+        self.export_report_btn.setObjectName("ghost")
+        self.export_report_btn.setToolTip(
+            "Exporta el estado de la cola y metadatos a archivo CSV o JSON."
+        )
+        self.export_report_btn.clicked.connect(self._export_report)
+
         row.addWidget(self.start_btn)
         row.addWidget(self.cancel_btn)
         row.addWidget(self.retry_btn)
+        row.addWidget(self.export_report_btn)
         row.addStretch(1)
 
         return bar
+
+    def _export_report(self):
+        """Exporta el reporte del lote de trabajos en CSV o JSON."""
+        if not self._jobs:
+            QMessageBox.information(
+                self, "Exportar reporte", "No hay trabajos en la cola para exportar."
+            )
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Guardar reporte del lote",
+            str(config.paths.OUTPUT_PATH / "reporte_lote.csv"),
+            "Archivos CSV (*.csv);;Archivos JSON (*.json)",
+        )
+        if not file_path:
+            return
+
+        dest = Path(file_path)
+        fmt = (
+            "json" if "json" in selected_filter.lower() or dest.suffix.lower() == ".json" else "csv"
+        )
+
+        for ui_job in self._jobs:
+            self._job_store.update_job(
+                ui_job.url,
+                status=ui_job.status,
+                result=ui_job.result,
+                title=ui_job.title,
+                hashtags=ui_job.hashtags,
+            )
+
+        saved = self._job_store.export_report(dest, fmt=fmt)
+        self._append_log(f"Reporte exportado: {saved}")
+        QMessageBox.information(
+            self, "Exportar reporte", f"Reporte guardado con éxito en:\n{saved}"
+        )
 
     def _retry_failed(self):
         """Reintenta únicamente los trabajos fallidos de la última cola."""
@@ -1715,6 +2039,10 @@ class MainWindow(QMainWindow):
         self._job_store.set_jobs([StoredJob(url=u) for u in urls])
         self._job_store.save()
 
+        # Persiste las opciones configuradas por el usuario.
+        self._save_settings()
+        config.download.COOKIES_FROM_BROWSER = self.cookies_combo.currentData()
+
         settings = PipelineSettings(
             subtitles=self.subtitles_cb.isChecked(),
             whisper_model=self.model_combo.currentText(),
@@ -1725,6 +2053,7 @@ class MainWindow(QMainWindow):
             word_highlight=self.word_highlight_cb.isChecked(),
             loudnorm=self.loudnorm_cb.isChecked(),
             evasion=self.evasion_cb.isChecked(),
+            hardware_accel=self.hw_accel_cb.isChecked(),
         )
 
         self._thread = QThread()

@@ -93,3 +93,31 @@ def test_save_is_atomic_leaves_no_temp_files(tmp_path):
     assert files == ["queue.json"]
     # El contenido debe estar en UTF-8 real, no escapado.
     assert "Título con ñ" in path.read_text(encoding="utf-8")
+
+
+def test_export_report_csv_and_json(tmp_path):
+    store = JobStore(path=tmp_path / "queue.json")
+    store.set_jobs(
+        [
+            StoredJob(
+                url="https://tiktok.com/1",
+                status="Listo",
+                title="Video 1",
+                hashtags="#fyp",
+                output_path="/tmp/v1.mp4",
+            )
+        ]
+    )
+
+    csv_path = tmp_path / "report.csv"
+    store.export_report(csv_path, fmt="csv")
+    assert csv_path.exists()
+    content = csv_path.read_text(encoding="utf-8")
+    assert "https://tiktok.com/1" in content
+    assert "Video 1" in content
+    assert "#fyp" in content
+
+    json_path = tmp_path / "report.json"
+    store.export_report(json_path, fmt="json")
+    assert json_path.exists()
+    assert "https://tiktok.com/1" in json_path.read_text(encoding="utf-8")

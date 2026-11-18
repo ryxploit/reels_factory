@@ -63,6 +63,21 @@ class VideoConfig:
     # que los hashtags del creator original no deben travelling con él.
     NEUTRAL_FILENAMES: bool = True
 
+    # Aceleración por hardware (VideoToolbox en macOS con fallback a libx264)
+    USE_HARDWARE_ACCELERATION: bool = True
+
+
+@dataclass
+class DownloadConfig:
+    """Configuración de descargas de vídeo con yt-dlp."""
+
+    # Navegador desde el que extraer cookies (ej: "chrome", "safari", "firefox")
+    COOKIES_FROM_BROWSER: str | None = os.environ.get("REELS_FACTORY_COOKIES_BROWSER")
+    # Archivo de cookies.txt alternativo
+    COOKIES_FILE: str | None = os.environ.get("REELS_FACTORY_COOKIES_FILE")
+    # Pre-descarga anticipada del siguiente trabajo mientras se procesa el actual
+    PREFETCH_NEXT: bool = True
+
 
 @dataclass
 class SubtitleConfig:
@@ -206,6 +221,7 @@ class Config:
 
     def __init__(self, base_path: Path | None = None):
         self.video = VideoConfig()
+        self.download = DownloadConfig()
         self.subtitle = SubtitleConfig()
         self.branding = BrandingConfig()
         self.fingerprint = FingerprintConfig()
@@ -213,7 +229,7 @@ class Config:
 
         # App settings
         self.APP_NAME = "ReelsFactoryPro"
-        self.APP_VERSION = "1.4.1"
+        self.APP_VERSION = "1.5.0"
         self.DEBUG = os.environ.get("REELS_FACTORY_DEBUG", "false").lower() == "true"
 
 

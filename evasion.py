@@ -82,9 +82,11 @@ class EvasionProfile:
         filters: list[str] = []
 
         if self.enable_speed_change and abs(self.speed_factor - 1.0) > 1e-6:
-            # setpts reescala las marcas de tiempo: el vídeo se reproduce
-            # ligeramente más rápido. El audio se ajusta aparte con atempo.
-            filters.append(f"setpts=PTS*{self.speed_factor:.6f}")
+            # setpts reescala las marcas de tiempo: para que el vídeo se
+            # reproduzca acompasado con el audio (que usa atempo compensado),
+            # los timestamps PTS deben multiplicarse por (1 / speed_factor).
+            pts_factor = 1.0 / self.speed_factor
+            filters.append(f"setpts=PTS*{pts_factor:.6f}")
 
         if self.enable_gamma_shift and abs(self.gamma - 1.0) > 1e-6:
             filters.append(f"eq=gamma={self.gamma:.4f}")
@@ -163,6 +165,9 @@ def build_video_filter_chain(
         Nueva lista de filtros
     """
     filters = list(base_filters)
+
+    # Añade los filtros de vídeo del perfil (setpts, gamma, hflip)
+    filters.extend(profile.video_filters())
 
     # El micro-desplazamiento va justo después del escalado: recorta unos
     # píxeles y vuelve a escalar al tamaño final, así el resultado no cambia

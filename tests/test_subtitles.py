@@ -96,3 +96,22 @@ def test_pipeline_applies_whisper_model_to_subtitler(tmp_path):
     # El generador debe adoptar el modelo solicitado antes de transcribir.
     pipeline.subtitler.model_size = settings.whisper_model
     assert pipeline.subtitler.model_size == "small"
+
+
+def test_word_highlight_tolerates_punctuation_differences(generator):
+    from subtitles import SubtitleSegment, SubtitleWord
+
+    seg = SubtitleSegment(
+        start=0.0,
+        end=2.0,
+        text="¡Hola, mundo!",
+        words=[
+            SubtitleWord(start=0.0, end=0.8, text="hola"),
+            SubtitleWord(start=0.9, end=1.8, text="mundo"),
+        ],
+    )
+    generator.subtitle_config.ENABLE_WORD_HIGHLIGHT = True
+    ass = generator._word_highlight_dialogues(seg)
+    assert "\\c" in ass
+    assert "Default" in ass
+    assert ass.count("Dialogue:") == 2

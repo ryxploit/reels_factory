@@ -15,10 +15,11 @@ from pathlib import Path
 from config import config
 from utils import (
     ProgressCallback,
+    detect_platform,
     generate_unique_filename,
     get_video_info,
     setup_logger,
-    validate_tiktok_url,
+    validate_video_url,
 )
 
 logger = setup_logger("downloader", config.paths.LOGS_PATH / "downloader.log")
@@ -71,7 +72,7 @@ class TikTokDownloader:
         Returns:
             Dictionary of yt-dlp options
         """
-        return {
+        opts = {
             "outtmpl": str(output_path),
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
@@ -83,6 +84,30 @@ class TikTokDownloader:
             "no_warnings": True,
             "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         }
+
+        # Configuración opcional de cookies para evitar bloqueos por bot / 429
+        dl_cfg = getattr(config, "download", None)
+        if dl_cfg:
+            if dl_cfg.COOKIES_FROM_BROWSER:
+                opts["cookiesfrombrowser"] = (dl_cfg.COOKIES_FROM_BROWSER,)
+            elif dl_cfg.COOKIES_FILE:
+                opts["cookiefile"] = str(dl_cfg.COOKIES_FILE)
+
+        return opts
+
+    def _cleanup_partial_files(self, output_path: Path) -> None:
+        """Elimina fragmentos temporales huérfanos generados por yt-dlp."""
+        stem = output_path.stem
+        for p in self.output_dir.glob(f"{stem}*.part*"):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        for p in self.output_dir.glob(f"{stem}*.ytdl*"):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _get_video_metadata(self, url: str) -> dict | None:
         """
@@ -150,12 +175,12 @@ class TikTokDownloader:
             DownloadResult with success status and file info
         """
         # Validate URL
-        if not validate_tiktok_url(url):
+        if not validate_video_url(url):
             return DownloadResult(
                 success=False,
                 file_path=None,
                 video_info=None,
-                error_message="Invalid TikTok URL format",
+                error_message="Invalid video URL format",
             )
 
         progress = ProgressCallback(progress_callback)
@@ -175,13 +200,14 @@ class TikTokDownloader:
         progress.update(10, 100, "Preparing download...")
 
         # Generate output filename
+        platform = detect_platform(url) or "video"
         if custom_filename:
             from utils import sanitize_filename
 
             safe = sanitize_filename(custom_filename)
             output_filename = f"{safe}.mp4"
         else:
-            base_name = original_title or "tiktok_video"
+            base_name = original_title or f"{platform}_video"
             output_filename = generate_unique_filename(base_name, "mp4")
 
         output_path = self.output_dir / output_filename
@@ -270,6 +296,7 @@ class TikTokDownloader:
             )
 
         except DownloadCancelled:
+            self._cleanup_partial_files(output_path)
             return DownloadResult(
                 success=False,
                 file_path=None,
@@ -277,6 +304,7 @@ class TikTokDownloader:
                 error_message="Cancelado",
             )
         except Exception as e:
+            self._cleanup_partial_files(output_path)
             logger.error(f"Download error: {e}")
             return DownloadResult(
                 success=False, file_path=None, video_info=None, error_message=str(e)

@@ -79,3 +79,25 @@ def test_build_ffmpeg_command_requires_ffmpeg(processor, monkeypatch):
             input_height=1920,
             duration=10.0,
         )
+
+
+def test_encoding_settings_uses_videotoolbox_when_available(processor, monkeypatch):
+    monkeypatch.setattr("processor.check_videotoolbox_support", lambda: True)
+    monkeypatch.setattr("sys.platform", "darwin")
+    processor.hw_accel_enabled = True
+
+    settings = processor._add_encoding_settings()
+    assert "-c:v" in settings
+    codec_idx = settings.index("-c:v") + 1
+    assert settings[codec_idx] == "h264_videotoolbox"
+
+
+def test_encoding_settings_falls_back_to_libx264(processor, monkeypatch):
+    monkeypatch.setattr("processor.check_videotoolbox_support", lambda: False)
+    processor.hw_accel_enabled = True
+
+    settings = processor._add_encoding_settings()
+    assert "-c:v" in settings
+    codec_idx = settings.index("-c:v") + 1
+    assert settings[codec_idx] == "libx264"
+    assert "-preset" in settings

@@ -7,6 +7,7 @@ Creates stylized ASS subtitles optimized for social media.
 Optimized for macOS Apple Silicon.
 """
 
+import re
 import subprocess
 import tempfile
 import threading
@@ -257,6 +258,39 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         return ass_content
 
+    @staticmethod
+    def _locate_word_span(full_text: str, word_text: str, cursor: int) -> tuple[int, int]:
+        """Localiza el rango (inicio, fin) de una palabra en el texto con tolerancia a puntuación."""
+        stripped = word_text.strip()
+        if not stripped:
+            return cursor, cursor
+
+        # 1. Búsqueda exacta a partir del cursor
+        pos = full_text.find(stripped, cursor)
+        if pos != -1:
+            return pos, pos + len(stripped)
+
+        # 2. Búsqueda exacta en todo el texto si hubo desfase
+        pos = full_text.find(stripped)
+        if pos != -1:
+            return pos, pos + len(stripped)
+
+        # 3. Búsqueda sin puntuación periférica (e.g. "¿hola!" -> "hola")
+        clean = re.sub(r"^[^\w]+|[^\w]+$", "", stripped, flags=re.UNICODE)
+        if clean:
+            lower_full = full_text.lower()
+            lower_clean = clean.lower()
+            pos = lower_full.find(lower_clean, cursor)
+            if pos != -1:
+                return pos, pos + len(clean)
+            pos = lower_full.find(lower_clean)
+            if pos != -1:
+                return pos, pos + len(clean)
+
+        # 4. Fallback seguro dentro de los límites del texto
+        safe_pos = min(cursor, len(full_text))
+        return safe_pos, min(safe_pos + len(stripped), len(full_text))
+
     def _word_highlight_dialogues(self, segment: SubtitleSegment) -> str:
         """
         Genera las líneas Dialogue con resaltado de palabra activa.
@@ -288,17 +322,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             start_time = self._format_ass_time(word.start)
             end_time = self._format_ass_time(word.end)
 
-            # Localiza la palabra en el texto a partir del cursor.
-            stripped = word.text.strip()
-            pos = full_text.find(stripped, cursor)
-            if pos == -1:
-                pos = full_text.find(stripped)
-                if pos == -1:
-                    pos = cursor
-            cursor = pos + len(stripped)
+            pos, end_pos = self._locate_word_span(full_text, word.text, cursor)
+            cursor = max(end_pos, cursor)
 
             before = full_text[:pos]
-            after = full_text[pos + len(stripped) :]
+            target_text = full_text[pos:end_pos] or word.text.strip()
+            after = full_text[end_pos:]
 
             override = (
                 f"{{\\c{cfg.HIGHLIGHT_COLOR}"
@@ -312,7 +341,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # La última palabra dura hasta el final del segmento.
                 end_time = self._format_ass_time(segment.end)
 
-            highlighted = f"{before}{override}{stripped}{reset}{after}"
+            highlighted = f"{before}{override}{target_text}{reset}{after}"
             result += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{highlighted}\n"
 
         return result

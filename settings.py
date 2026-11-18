@@ -41,6 +41,8 @@ class AppSettings:
     word_highlight: bool = True
     loudnorm: bool = True
     evasion: bool = True
+    hardware_accel: bool = True
+    cookies_browser: str = ""
     output_dir: str = ""
 
     @classmethod

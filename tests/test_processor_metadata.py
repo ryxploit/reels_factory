@@ -24,7 +24,7 @@ def test_metadata_is_stripped(processor):
 
 def test_encoding_is_facebook_compatible(processor):
     opts = processor._add_encoding_settings()
-    assert "libx264" in opts
+    assert any(c in opts for c in ("libx264", "h264_videotoolbox"))
     assert "yuv420p" in opts
     assert "+faststart" in opts
 

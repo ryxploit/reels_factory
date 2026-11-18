@@ -14,7 +14,7 @@ y así se pueden usar tanto como script suelto (``python app.py``) como tras
 import os
 import sys
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 __author__ = "ReelsFactoryPro"
 
 # Hace resolubles los imports absolutos internos cuando el paquete se importa
