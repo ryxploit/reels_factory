@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
+from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QFontDatabase, QIcon, QPixmap
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -55,6 +54,10 @@ from utils import (
 )
 
 logger = setup_logger("app", config.paths.LOGS_PATH / "app.log")
+
+# Espera máxima (s) al reutilizar una descarga anticipada antes de caer a la
+# descarga normal; evita lanzar dos descargas del mismo vídeo en paralelo.
+PREFETCH_JOIN_TIMEOUT = 30.0
 
 
 @dataclass
@@ -108,9 +111,7 @@ class DropUrlsTextEdit(QTextEdit):
                 if lines:
                     current = self.toPlainText().strip()
                     new_text = (
-                        (current + "\n" + "\n".join(lines)).strip()
-                        if current
-                        else "\n".join(lines)
+                        (current + "\n" + "\n".join(lines)).strip() if current else "\n".join(lines)
                     )
                     self.setPlainText(new_text)
                     event.acceptProposedAction()
@@ -170,23 +171,35 @@ class PipelineWorker(QObject):
 
         Emite señales (`job_update`, `overall`, `log`, `job_done`) que la
         interfaz usa para actualizar la tabla, barra de progreso y logs.
+        El estado final del lote describe fielmente si todo salió bien, si
+        hubo fallos o si se canceló.
         """
         total = len(self._urls)
         prefetched_result: dict[str, Any] = {}
+        prefetch_lock = threading.Lock()
         prefetch_thread: threading.Thread | None = None
+        prefetch_url: str | None = None
+        batch_ok = True
+        batch_cancelled = False
+        had_warnings = False
 
         def do_prefetch(target_url: str):
+            # Descarga anticipada: nunca tragar la excepción en silencio.
             try:
                 res = self._pipeline.downloader.download(
                     target_url, cancel_event=self._cancel_event
                 )
-                prefetched_result[target_url] = res
-            except Exception:
-                pass
+                with prefetch_lock:
+                    prefetched_result[target_url] = res
+            except Exception as e:
+                with prefetch_lock:
+                    prefetched_result.pop(target_url, None)
+                self.log.emit(f"Prefetch fallido para {target_url}: {e}")
 
         try:
             for idx, url in enumerate(self._urls):
                 if self._cancel_event.is_set():
+                    batch_cancelled = True
                     self.job_done.emit(idx, False, "Cancelado")
                     self._persist(url, status="Cancelado")
                     break
@@ -195,20 +208,39 @@ class PipelineWorker(QObject):
                 self.log.emit(f"Iniciando job {idx + 1}/{total}")
                 self._persist(url, status="En curso")
 
-                # Si hubo pre-descarga previa para este URL, recogerla
-                prefetched_dl = prefetched_result.get(url)
+                # Esperar al prefetch de este URL antes de reutilizarlo: si no
+                # ha terminado, se descarga normalmente (sin paralelismos duplicados).
+                with prefetch_lock:
+                    pending = prefetch_thread if prefetch_url == url else None
+                if pending is not None and pending.is_alive():
+                    pending.join(timeout=PREFETCH_JOIN_TIMEOUT)
+                    if pending.is_alive():
+                        self.log.emit(
+                            f"Prefetch de {url} no terminó a tiempo; se descargará normalmente"
+                        )
+                with prefetch_lock:
+                    prefetched_dl = prefetched_result.pop(url, None)
 
-                # Si hay siguiente trabajo en la cola, iniciar su descarga anticipada
+                # Si hay siguiente trabajo en la cola, iniciar su descarga anticipada.
+                # No lanzar dos prefetch para la misma URL.
                 if (
                     idx + 1 < total
                     and getattr(config.download, "PREFETCH_NEXT", True)
                     and not self._cancel_event.is_set()
                 ):
                     next_url = self._urls[idx + 1]
-                    prefetch_thread = threading.Thread(
-                        target=do_prefetch, args=(next_url,), daemon=True
-                    )
-                    prefetch_thread.start()
+                    with prefetch_lock:
+                        already_started = (
+                            prefetch_url == next_url
+                            and prefetch_thread is not None
+                            and prefetch_thread.is_alive()
+                        )
+                        if not already_started:
+                            prefetch_thread = threading.Thread(
+                                target=do_prefetch, args=(next_url,), daemon=True
+                            )
+                            prefetch_url = next_url
+                            prefetch_thread.start()
 
                 def progress_cb(value: int, status: str, idx: int = idx):
                     self.job_update.emit(idx, status, value)
@@ -228,10 +260,12 @@ class PipelineWorker(QObject):
                         prefetched_download=prefetched_dl,
                     )
                 except CancelledError:
+                    batch_cancelled = True
                     self.job_done.emit(idx, False, "Cancelado")
                     self._persist(url, status="Cancelado")
                     break
                 except Exception as e:
+                    batch_ok = False
                     self.job_done.emit(idx, False, str(e))
                     self._persist(url, status="Falló", error_message=str(e))
                     break
@@ -246,11 +280,15 @@ class PipelineWorker(QObject):
                         error_message="",
                     )
                 else:
+                    # Un JobResult fallido marca el lote como fallido, pero no
+                    # detiene el procesamiento de los trabajos restantes.
+                    batch_ok = False
                     message = result.error_message or "Falló"
                     self.job_done.emit(idx, False, message)
                     self._persist(url, status="Falló", error_message=message)
 
                 for warning in result.warnings or []:
+                    had_warnings = True
                     self.job_warning.emit(idx, warning)
 
                 if result.thumbnail_path:
@@ -266,10 +304,29 @@ class PipelineWorker(QObject):
                     self._persist(url, title=title, hashtags=hashtags)
 
                 if self._cancel_event.is_set():
+                    batch_cancelled = True
                     break
-
-            self.overall.emit(100, "Listo")
         finally:
+            # No dejar un hilo daemon descargando a ciegas al terminar/cancelar.
+            with prefetch_lock:
+                pending = prefetch_thread
+            if pending is not None and pending.is_alive():
+                # Sincronizar la cancelación con el hilo de prefetch pendiente.
+                self._cancel_event.set()
+                pending.join(timeout=PREFETCH_JOIN_TIMEOUT)
+                if pending.is_alive():
+                    self.log.emit("Prefetch pendiente no terminó al finalizar el lote")
+
+            # Estado final veraz: "Listo" solo si todo salió bien.
+            if batch_cancelled:
+                final_message = "Cancelado"
+            elif not batch_ok:
+                final_message = "Falló"
+            elif had_warnings:
+                final_message = "Listo con advertencias"
+            else:
+                final_message = "Listo"
+            self.overall.emit(100, final_message)
             self.finished.emit()
 
 
@@ -785,7 +842,9 @@ class MainWindow(QMainWindow):
 
         self.subtitles_cb = QCheckBox("Generar subtítulos con Whisper")
         self.subtitles_cb.setChecked(True)
-        self.subtitles_cb.setToolTip("Activa la transcripción y subtítulos automáticos con Whisper.")
+        self.subtitles_cb.setToolTip(
+            "Activa la transcripción y subtítulos automáticos con Whisper."
+        )
 
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Modelo:"))
@@ -1537,7 +1596,15 @@ class MainWindow(QMainWindow):
                             QTimer.singleShot(0, append_line)
                     proc.wait()
                     ret = proc.returncode
-                    self._append_log("Instalación yt-dlp: " + ("OK" if ret == 0 else "FALLÓ"))
+                    # Acceso al log de la GUI siempre desde el hilo principal.
+                    from PySide6.QtCore import QTimer
+
+                    QTimer.singleShot(
+                        0,
+                        lambda: self._append_log(
+                            "Instalación yt-dlp: " + ("OK" if ret == 0 else "FALLÓ")
+                        ),
+                    )
 
                     def on_done():
                         progress.setVisible(False)
@@ -1558,11 +1625,14 @@ class MainWindow(QMainWindow):
 
                     QTimer.singleShot(100, on_done)
                 except Exception as e:
-                    self._append_log(f"Error instalación yt-dlp: {e}")
-                    from PySide6.QtCore import QTimer
-
+                    # Acceso al log de la GUI siempre desde el hilo principal.
                     # `e` se elimina al salir del bloque except: se captura el valor.
                     err_msg = str(e)
+                    from PySide6.QtCore import QTimer
+
+                    QTimer.singleShot(
+                        0, lambda: self._append_log(f"Error instalación yt-dlp: {err_msg}")
+                    )
                     QTimer.singleShot(
                         100, lambda: QMessageBox.warning(self, "Instalación", err_msg)
                     )
@@ -2117,13 +2187,13 @@ class MainWindow(QMainWindow):
     def _on_finished(self):
         """Restablece la UI al terminar el procesamiento.
 
-        Vuelve a habilitar botones y muestra "Listo" en la barra de estado.
+        Vuelve a habilitar botones y deja intacto el mensaje final emitido por
+        el worker (``overall``), que ya indica Listo / Falló / Cancelado.
         """
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.import_file_btn.setEnabled(True)
         self.clear_urls_btn.setEnabled(True)
-        self.statusBar().showMessage("Listo")
         self._update_retry_button()
 
 

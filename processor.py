@@ -11,6 +11,7 @@ Processes videos for Facebook Reels format.
 Optimized for macOS Apple Silicon.
 """
 
+import copy
 import queue
 import random
 import re
@@ -24,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import config
+from config import VideoConfig, config
 from deps import resolve_binaries
 from evasion import EvasionProfile, build_video_filter_chain, default_profile
 from utils import (
@@ -52,6 +53,19 @@ class ProcessingResult:
     watermark_detected: bool = False
     watermark_summary: str | None = None
     evasion_summary: str | None = None
+
+
+@dataclass
+class _RenderContext:
+    """Configuración efectiva de un solo render (copia local, nunca la global).
+
+    Los overrides por trabajo no se escriben en `config.video`, que es un
+    singleton compartido por todos los pipelines y todos los jobs.
+    """
+
+    video_config: VideoConfig
+    evasion_enabled: bool
+    hw_accel_enabled: bool
 
 
 class VideoProcessor:
@@ -83,6 +97,40 @@ class VideoProcessor:
         self.evasion_profile: EvasionProfile = default_profile()
         # Aceleración por hardware (VideoToolbox en macOS)
         self.hw_accel_enabled: bool = getattr(config.video, "USE_HARDWARE_ACCELERATION", True)
+
+    def _render_context(
+        self,
+        loudnorm: bool | None = None,
+        evasion_enabled: bool | None = None,
+        hw_accel_enabled: bool | None = None,
+    ) -> _RenderContext:
+        """Construye la config efectiva de este trabajo sin mutar la global.
+
+        Los valores que llegan como `None` no se consideran overrides: se
+        respeta el estado del colaborador (que a su vez procede de la config
+        global). La copia es superficial pero suficiente: todos los campos de
+        ``VideoConfig`` son escalares inmutables.
+        """
+        video_config = copy.copy(self.video_config)
+        if loudnorm is not None:
+            video_config.ENABLE_LOUDNORM = loudnorm
+        return _RenderContext(
+            video_config=video_config,
+            evasion_enabled=self.evasion_enabled if evasion_enabled is None else evasion_enabled,
+            hw_accel_enabled=(
+                self.hw_accel_enabled if hw_accel_enabled is None else hw_accel_enabled
+            ),
+        )
+
+    def _effective(self, ctx: _RenderContext | None) -> tuple[VideoConfig, bool, bool]:
+        """Devuelve (config, evasión, aceleración) del trabajo o de la instancia.
+
+        Con `ctx=None` los helpers directos siguen usando el estado original de
+        la instancia, por lo que las firmas siguen siendo backward-compatible.
+        """
+        if ctx is None:
+            return self.video_config, self.evasion_enabled, self.hw_accel_enabled
+        return ctx.video_config, ctx.evasion_enabled, ctx.hw_accel_enabled
 
     def _calculate_crop_filter(
         self, input_width: int, input_height: int, target_width: int, target_height: int
@@ -118,6 +166,7 @@ class VideoProcessor:
         input_width: int,
         input_height: int,
         logo_path: Path | None = None,
+        ctx: _RenderContext | None = None,
     ) -> str:
         """
         Build complete FFmpeg filter chain.
@@ -126,12 +175,14 @@ class VideoProcessor:
             input_width: Source video width
             input_height: Source video height
             logo_path: Optional path to logo image
+            ctx: Config efectiva del trabajo (copia local), o None
 
         Returns:
             FFmpeg filter_complex string
         """
-        target_width = self.video_config.WIDTH
-        target_height = self.video_config.HEIGHT
+        cfg, evasion, _hw_accel = self._effective(ctx)
+        target_width = cfg.WIDTH
+        target_height = cfg.HEIGHT
 
         filters = []
 
@@ -145,36 +196,30 @@ class VideoProcessor:
         filters.append(f"scale={target_width}:{target_height}")
 
         # 3. Set frame rate
-        filters.append(f"fps={self.video_config.FPS}")
+        filters.append(f"fps={cfg.FPS}")
 
         # 4. Apply subtle variations to avoid content fingerprint detection
-        if self.video_config.ENABLE_VARIATIONS:
+        if cfg.ENABLE_VARIATIONS:
             # Instancia local: no se siembra el RNG global del proceso.
             rng = random.Random(int(time.time() * 1000))
 
             # Subtle brightness/contrast variation (imperceptible to human eye)
-            brightness_var = rng.uniform(
-                -self.video_config.BRIGHTNESS_VARIATION, self.video_config.BRIGHTNESS_VARIATION
-            )
-            contrast_var = rng.uniform(
-                1 - self.video_config.CONTRAST_VARIATION, 1 + self.video_config.CONTRAST_VARIATION
-            )
+            brightness_var = rng.uniform(-cfg.BRIGHTNESS_VARIATION, cfg.BRIGHTNESS_VARIATION)
+            contrast_var = rng.uniform(1 - cfg.CONTRAST_VARIATION, 1 + cfg.CONTRAST_VARIATION)
             saturation_var = rng.uniform(
-                1 - self.video_config.SATURATION_VARIATION,
-                1 + self.video_config.SATURATION_VARIATION,
+                1 - cfg.SATURATION_VARIATION,
+                1 + cfg.SATURATION_VARIATION,
             )
             filters.append(
                 f"eq=brightness={brightness_var:.4f}:contrast={contrast_var:.4f}:saturation={saturation_var:.4f}"
             )
 
             # Add minimal noise to alter pixel fingerprint (almost invisible)
-            noise_strength = rng.randint(
-                self.video_config.NOISE_STRENGTH_MIN, self.video_config.NOISE_STRENGTH_MAX
-            )
+            noise_strength = rng.randint(cfg.NOISE_STRENGTH_MIN, cfg.NOISE_STRENGTH_MAX)
             filters.append(f"noise=c0s={noise_strength}:allf=t")
 
         # 5. Evasión de huella digital perceptual (vídeo).
-        if self.evasion_enabled:
+        if evasion:
             filters.extend(
                 build_video_filter_chain(
                     [],
@@ -219,6 +264,7 @@ class VideoProcessor:
         duration: float,
         logo_path: Path | None = None,
         subtitle_path: Path | None = None,
+        ctx: _RenderContext | None = None,
     ) -> list[str]:
         """
         Build complete FFmpeg command for video processing.
@@ -237,11 +283,13 @@ class VideoProcessor:
             duration: Video duration in seconds
             logo_path: Optional logo image path
             subtitle_path: Optional subtitle file path
+            ctx: Config efectiva del trabajo (copia local), o None
 
         Returns:
             FFmpeg command as list of arguments
         """
-        max_duration = min(duration, self.video_config.MAX_DURATION_SECONDS)
+        cfg, _evasion, _hw_accel = self._effective(ctx)
+        max_duration = min(duration, cfg.MAX_DURATION_SECONDS)
 
         bins = resolve_binaries()
         if not bins.ffmpeg:
@@ -260,6 +308,7 @@ class VideoProcessor:
             input_width,
             input_height,
             logo_path if logo_path and logo_path.exists() else None,
+            ctx=ctx,
         )
 
         use_complex_filter = logo_path and logo_path.exists()
@@ -272,7 +321,7 @@ class VideoProcessor:
         self._add_subtitle_filters(cmd, subtitle_path, use_complex_filter)
 
         # Add encoding settings
-        cmd.extend(self._add_encoding_settings())
+        cmd.extend(self._add_encoding_settings(ctx=ctx))
 
         # Add metadata and optimization settings
         cmd.extend(self._add_metadata_settings())
@@ -329,57 +378,59 @@ class VideoProcessor:
             current_vf = cmd[cmd.index("-vf") + 1]
             cmd[cmd.index("-vf") + 1] = f"{current_vf},{subtitle_filter}"
 
-    def _add_encoding_settings(self) -> list[str]:
+    def _add_encoding_settings(self, ctx: _RenderContext | None = None) -> list[str]:
         """
         Add video and audio encoding settings.
+
+        Args:
+            ctx: Config efectiva del trabajo (copia local), o None
 
         Returns:
             List of FFmpeg encoding arguments
         """
+        cfg, evasion, hw_accel = self._effective(ctx)
         cmd = []
 
         # Video codec settings: aceleración por hardware VideoToolbox en macOS si está disponible
-        use_videotoolbox = (
-            self.hw_accel_enabled and sys.platform == "darwin" and check_videotoolbox_support()
-        )
+        use_videotoolbox = hw_accel and sys.platform == "darwin" and check_videotoolbox_support()
         if use_videotoolbox:
             cmd.extend(
                 [
                     "-c:v",
                     "h264_videotoolbox",
                     "-b:v",
-                    self.video_config.VIDEO_BITRATE,
+                    cfg.VIDEO_BITRATE,
                     "-maxrate",
-                    self.video_config.VIDEO_MAXRATE,
+                    cfg.VIDEO_MAXRATE,
                     "-bufsize",
-                    self.video_config.VIDEO_BUFSIZE,
+                    cfg.VIDEO_BUFSIZE,
                     "-profile:v",
-                    self.video_config.VIDEO_PROFILE,
+                    cfg.VIDEO_PROFILE,
                     "-level",
-                    self.video_config.VIDEO_LEVEL,
+                    cfg.VIDEO_LEVEL,
                     "-pix_fmt",
-                    self.video_config.PIXEL_FORMAT,
+                    cfg.PIXEL_FORMAT,
                 ]
             )
         else:
             cmd.extend(
                 [
                     "-c:v",
-                    self.video_config.VIDEO_CODEC,
+                    cfg.VIDEO_CODEC,
                     "-preset",
-                    self.video_config.VIDEO_PRESET,
+                    cfg.VIDEO_PRESET,
                     "-b:v",
-                    self.video_config.VIDEO_BITRATE,
+                    cfg.VIDEO_BITRATE,
                     "-maxrate",
-                    self.video_config.VIDEO_MAXRATE,
+                    cfg.VIDEO_MAXRATE,
                     "-bufsize",
-                    self.video_config.VIDEO_BUFSIZE,
+                    cfg.VIDEO_BUFSIZE,
                     "-profile:v",
-                    self.video_config.VIDEO_PROFILE,
+                    cfg.VIDEO_PROFILE,
                     "-level",
-                    self.video_config.VIDEO_LEVEL,
+                    cfg.VIDEO_LEVEL,
                     "-pix_fmt",
-                    self.video_config.PIXEL_FORMAT,
+                    cfg.PIXEL_FORMAT,
                 ]
             )
 
@@ -387,13 +438,13 @@ class VideoProcessor:
         cmd.extend(
             [
                 "-c:a",
-                self.video_config.AUDIO_CODEC,
+                cfg.AUDIO_CODEC,
                 "-b:a",
-                self.video_config.AUDIO_BITRATE,
+                cfg.AUDIO_BITRATE,
                 "-ar",
-                str(self.video_config.AUDIO_SAMPLE_RATE),
+                str(cfg.AUDIO_SAMPLE_RATE),
                 "-ac",
-                str(self.video_config.AUDIO_CHANNELS),
+                str(cfg.AUDIO_CHANNELS),
             ]
         )
 
@@ -408,17 +459,13 @@ class VideoProcessor:
 
         # Evasión de huella digital de audio: el tono es lo que el hash de
         # audio de las plataformas detecta; el volumen no.
-        if self.evasion_enabled:
-            audio_filters.extend(
-                self.evasion_profile.audio_filters(self.video_config.AUDIO_SAMPLE_RATE)
-            )
+        if evasion:
+            audio_filters.extend(self.evasion_profile.audio_filters(cfg.AUDIO_SAMPLE_RATE))
 
         # Normalización de loudness: Facebook/TikTok esperan -14 LUFS.
-        if self.video_config.ENABLE_LOUDNORM:
+        if cfg.ENABLE_LOUDNORM:
             audio_filters.append(
-                f"loudnorm=I={self.video_config.LOUDNORM_I}"
-                f":TP={self.video_config.LOUDNORM_TP}"
-                f":LRA={self.video_config.LOUDNORM_LRA}"
+                f"loudnorm=I={cfg.LOUDNORM_I}:TP={cfg.LOUDNORM_TP}:LRA={cfg.LOUDNORM_LRA}"
             )
 
         if audio_filters:
@@ -476,7 +523,7 @@ class VideoProcessor:
         )
 
     def _parse_ffmpeg_progress(
-        self, line: str, total_duration: float
+        self, line: str, total_duration: float, ctx: _RenderContext | None = None
     ) -> tuple[float | None, str | None]:
         """
         Parse FFmpeg progress from stderr.
@@ -484,6 +531,7 @@ class VideoProcessor:
         Args:
             line: Output line from FFmpeg
             total_duration: Total video duration
+            ctx: Config efectiva del trabajo (copia local), o None
 
         Returns:
             Tuple of (progress_percentage, status_message)
@@ -496,7 +544,8 @@ class VideoProcessor:
             seconds = float(time_match.group(3))
             current_time = hours * 3600 + minutes * 60 + seconds
 
-            max_time = min(total_duration, self.video_config.MAX_DURATION_SECONDS)
+            cfg, _evasion, _hw_accel = self._effective(ctx)
+            max_time = min(total_duration, cfg.MAX_DURATION_SECONDS)
             percentage = min((current_time / max_time) * 100, 100)
 
             return percentage, f"Processing: {percentage:.1f}%"
@@ -511,6 +560,9 @@ class VideoProcessor:
         subtitle_path: Path | None = None,
         progress_callback: Callable[[int, int, str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        loudnorm: bool | None = None,
+        evasion_enabled: bool | None = None,
+        hw_accel_enabled: bool | None = None,
     ) -> ProcessingResult:
         """
         Process a video for Facebook Reels.
@@ -521,10 +573,16 @@ class VideoProcessor:
             logo_path: Optional logo image for branding
             subtitle_path: Optional subtitle file to burn
             progress_callback: Optional progress callback
+            loudnorm: Override de normalización de audio SOLO para este trabajo
+            evasion_enabled: Override de evasión de huella SOLO para este trabajo
+            hw_accel_enabled: Override de aceleración por hardware SOLO para este trabajo
 
         Returns:
             ProcessingResult with success status and file info
         """
+        # Contexto por trabajo: copia local de la config, nunca el singleton global.
+        ctx = self._render_context(loudnorm, evasion_enabled, hw_accel_enabled)
+        cfg, evasion, _hw_accel = self._effective(ctx)
         progress = ProgressCallback(progress_callback)
         progress.update(5, 100, "Analyzing video...")
 
@@ -585,7 +643,7 @@ class VideoProcessor:
         if output_filename:
             if not output_filename.endswith(".mp4"):
                 output_filename += ".mp4"
-        elif self.video_config.NEUTRAL_FILENAMES:
+        elif cfg.NEUTRAL_FILENAMES:
             # Nombre neutro: el título del vídeo original (y sus hashtags)
             # acabarían en el nombre del archivo, que es visible al subirlo
             # a la plataforma. Se usa solo la fecha y un contador.
@@ -604,6 +662,7 @@ class VideoProcessor:
             duration=video_info["duration"],
             logo_path=logo_path,
             subtitle_path=subtitle_path,
+            ctx=ctx,
         )
 
         logger.debug(f"FFmpeg command: {' '.join(cmd)}")
@@ -656,7 +715,9 @@ class VideoProcessor:
 
                 stderr_lines.append(line.rstrip())
 
-                percentage, status = self._parse_ffmpeg_progress(line, video_info["duration"])
+                percentage, status = self._parse_ffmpeg_progress(
+                    line, video_info["duration"], ctx=ctx
+                )
 
                 if percentage is not None:
                     mapped_progress = 15 + int(percentage * 0.75)
@@ -722,8 +783,8 @@ class VideoProcessor:
             # plataforma. Un fallo aquí no invalida el vídeo, pero debe
             # advertirse al usuario en vez de fallar en silencio.
             warnings: list[str] = []
-            if self.video_config.VALIDATE_OUTPUT:
-                warnings = self._validate_output(output_info)
+            if cfg.VALIDATE_OUTPUT:
+                warnings = self._validate_output(output_info, ctx=ctx)
 
             if watermark_report and watermark_report.detected:
                 warnings.append(
@@ -736,7 +797,7 @@ class VideoProcessor:
 
             thumbnail_path = self._generate_thumbnail(output_path, output_path)
 
-            evasion_summary = self.evasion_profile.summary() if self.evasion_enabled else None
+            evasion_summary = self.evasion_profile.summary() if evasion else None
 
             return ProcessingResult(
                 success=True,
@@ -757,7 +818,9 @@ class VideoProcessor:
         finally:
             self._cleanup_temp_artifacts()
 
-    def _validate_output(self, output_info: dict | None) -> list[str]:
+    def _validate_output(
+        self, output_info: dict | None, ctx: _RenderContext | None = None
+    ) -> list[str]:
         """Comprueba que el vídeo final cumple las especificaciones.
 
         Facebook Reels exige 1080x1920 y una duración máxima de 55s. Si el
@@ -766,6 +829,7 @@ class VideoProcessor:
 
         Args:
             output_info: Metadatos del vídeo de salida
+            ctx: Config efectiva del trabajo (copia local), o None
 
         Returns:
             Lista de avisos (vacía si todo es correcto)
@@ -773,10 +837,11 @@ class VideoProcessor:
         if not output_info:
             return ["No se pudieron leer los metadatos del vídeo final."]
 
+        cfg, _evasion, _hw_accel = self._effective(ctx)
         warnings: list[str] = []
-        target_w = self.video_config.WIDTH
-        target_h = self.video_config.HEIGHT
-        max_dur = self.video_config.MAX_DURATION_SECONDS
+        target_w = cfg.WIDTH
+        target_h = cfg.HEIGHT
+        max_dur = cfg.MAX_DURATION_SECONDS
 
         width = output_info.get("width", 0)
         height = output_info.get("height", 0)

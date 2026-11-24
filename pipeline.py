@@ -155,16 +155,15 @@ class ReelsPipeline:
 
         subtitle_path = None
         if settings.subtitles:
-            # Respeta el modelo elegido por el usuario en la GUI.
-            if settings.whisper_model:
-                self.subtitler.model_size = settings.whisper_model
-            # El resaltado por palabra se controla por trabajo.
-            self.subtitler.subtitle_config.ENABLE_WORD_HIGHLIGHT = settings.word_highlight
+            # Los ajustes del trabajo se pasan como overrides por llamada: no
+            # se muta la config global ni el estado compartido del subtitler.
             sub = self.subtitler.generate(
                 downloaded_path,
                 language=settings.language,
                 progress_callback=lambda c, _t, s: p(self._calculate_progress(35, 70, c), s),
                 cancel_event=cancel_event,
+                model_size=settings.whisper_model or None,
+                word_highlight=settings.word_highlight,
             )
             if not sub.success or not sub.subtitle_path:
                 return JobResult(
@@ -182,18 +181,17 @@ class ReelsPipeline:
         raise_if_cancelled()
 
         logo_path = settings.logo_path if settings.branding else None
-        # La normalización de audio se controla por trabajo.
-        self.processor.video_config.ENABLE_LOUDNORM = settings.loudnorm
-        # La evasión de huella digital se controla por trabajo.
-        self.processor.evasion_enabled = settings.evasion
-        # Aceleración por hardware
-        self.processor.hw_accel_enabled = settings.hardware_accel
+        # Igual que con los subtítulos: overrides por trabajo, sin escribir en
+        # `config.video` ni en el estado compartido del processor.
         out = self.processor.process(
             input_path=downloaded_path,
             logo_path=logo_path,
             subtitle_path=subtitle_path,
             progress_callback=lambda c, _t, s: p(self._calculate_progress(70, 100, c), s),
             cancel_event=cancel_event,
+            loudnorm=settings.loudnorm,
+            evasion_enabled=settings.evasion,
+            hw_accel_enabled=settings.hardware_accel,
         )
         if not out.success or not out.file_path:
             return JobResult(

@@ -7,6 +7,7 @@ Creates stylized ASS subtitles optimized for social media.
 Optimized for macOS Apple Silicon.
 """
 
+import copy
 import re
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import config
+from config import SubtitleConfig, config
 from deps import resolve_binaries
 from utils import ProgressCallback, sanitize_filename, setup_logger
 
@@ -116,6 +117,8 @@ class SubtitleGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.model_size = model_size or config.subtitle.MODEL_SIZE
+        # Referencia a la config global por compatibilidad con llamadores directos.
+        # Los overrides por trabajo se aplican sobre copias locales en `generate()`.
         self.subtitle_config = config.subtitle
 
         self._model = None
@@ -125,17 +128,24 @@ class SubtitleGenerator:
         # Segmentos de la última transcripción, para exportarlos a SRT.
         self.last_segments: list[SubtitleSegment] = []
 
-    def _load_model(self):
-        """Load the Whisper model (lazy loading)."""
+    def _load_model(self, model_size: str | None = None):
+        """Load the Whisper model (lazy loading).
+
+        Args:
+            model_size: Modelo solicitado para esta carga. Si es None se usa
+              `self.model_size` (comportamiento original).
+        """
+        # Modelo efectivo de este trabajo: no se escribe en `self.model_size`.
+        requested_size = model_size or self.model_size
         # Si cambió el modelo solicitado, se recarga el que está en memoria.
-        if self._model_loaded and self._loaded_model_size == self.model_size:
+        if self._model_loaded and self._loaded_model_size == requested_size:
             return
 
         try:
             import torch
             import whisper
 
-            logger.info(f"Loading Whisper model: {self.model_size}")
+            logger.info(f"Loading Whisper model: {requested_size}")
 
             device = "cpu"
             if self.subtitle_config.USE_MPS and getattr(torch.backends, "mps", None) is not None:
@@ -147,11 +157,11 @@ class SubtitleGenerator:
 
             _patch_mps_float32(whisper, torch)
 
-            self._model = whisper.load_model(self.model_size, device=device)
+            self._model = whisper.load_model(requested_size, device=device)
             self._device = device
 
             self._model_loaded = True
-            self._loaded_model_size = self.model_size
+            self._loaded_model_size = requested_size
             logger.info(f"Whisper model loaded successfully (device: {device})")
 
         except ImportError:
@@ -161,16 +171,17 @@ class SubtitleGenerator:
         except Exception as e:
             raise RuntimeError(f"Failed to load Whisper model: {e}") from e
 
-    def _reload_on_cpu(self):
+    def _reload_on_cpu(self, model_size: str | None = None):
         """Recarga el modelo Whisper en CPU como plan B."""
 
         import whisper
 
+        requested_size = model_size or self.model_size
         logger.info("Reloading Whisper model on CPU")
-        self._model = whisper.load_model(self.model_size, device="cpu")
+        self._model = whisper.load_model(requested_size, device="cpu")
         self._device = "cpu"
         self._model_loaded = True
-        self._loaded_model_size = self.model_size
+        self._loaded_model_size = requested_size
 
     def _format_ass_time(self, seconds: float) -> str:
         """
@@ -189,18 +200,25 @@ class SubtitleGenerator:
 
         return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
 
-    def _create_ass_header(self, video_width: int = 1080, video_height: int = 1920) -> str:
+    def _create_ass_header(
+        self,
+        video_width: int = 1080,
+        video_height: int = 1920,
+        subtitle_config: SubtitleConfig | None = None,
+    ) -> str:
         """
         Create ASS subtitle file header with styling.
 
         Args:
             video_width: Video width for positioning
             video_height: Video height for positioning
+            subtitle_config: Config efectiva del trabajo (copia local). Si es
+              None se usa la config de la instancia.
 
         Returns:
             ASS header string
         """
-        cfg = self.subtitle_config
+        cfg = subtitle_config if subtitle_config is not None else self.subtitle_config
 
         header = f"""[Script Info]
 Title: Reels Factory Subtitles
@@ -221,7 +239,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return header
 
     def _segments_to_ass(
-        self, segments: list[SubtitleSegment], video_width: int = 1080, video_height: int = 1920
+        self,
+        segments: list[SubtitleSegment],
+        video_width: int = 1080,
+        video_height: int = 1920,
+        subtitle_config: SubtitleConfig | None = None,
     ) -> str:
         """
         Convert subtitle segments to ASS format.
@@ -235,15 +257,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             segments: List of subtitle segments
             video_width: Video width
             video_height: Video height
+            subtitle_config: Config efectiva del trabajo (copia local)
 
         Returns:
             Complete ASS file content
         """
-        ass_content = self._create_ass_header(video_width, video_height)
+        cfg = subtitle_config if subtitle_config is not None else self.subtitle_config
+        ass_content = self._create_ass_header(video_width, video_height, subtitle_config=cfg)
 
         for segment in segments:
-            if self.subtitle_config.ENABLE_WORD_HIGHLIGHT and segment.words:
-                ass_content += self._word_highlight_dialogues(segment)
+            if cfg.ENABLE_WORD_HIGHLIGHT and segment.words:
+                ass_content += self._word_highlight_dialogues(segment, subtitle_config=cfg)
                 continue
 
             start_time = self._format_ass_time(segment.start)
@@ -291,7 +315,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         safe_pos = min(cursor, len(full_text))
         return safe_pos, min(safe_pos + len(stripped), len(full_text))
 
-    def _word_highlight_dialogues(self, segment: SubtitleSegment) -> str:
+    def _word_highlight_dialogues(
+        self, segment: SubtitleSegment, subtitle_config: SubtitleConfig | None = None
+    ) -> str:
         """
         Genera las líneas Dialogue con resaltado de palabra activa.
 
@@ -302,11 +328,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         Args:
             segment: Segmento con marcas de tiempo por palabra
+            subtitle_config: Config efectiva del trabajo (copia local)
 
         Returns:
             Líneas ASS del segmento
         """
-        cfg = self.subtitle_config
+        cfg = subtitle_config if subtitle_config is not None else self.subtitle_config
         words = [w for w in (segment.words or []) if w.text.strip()]
         if not words:
             return ""
@@ -419,6 +446,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         language: str | None = None,
         progress_callback: Callable[[int, int, str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        model_size: str | None = None,
+        word_highlight: bool | None = None,
     ) -> SubtitleResult:
         """
         Generate subtitles for a video.
@@ -428,10 +457,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             output_filename: Optional custom filename for subtitle file
             language: Optional language code (auto-detected if not specified)
             progress_callback: Optional progress callback
+            model_size: Override del modelo Whisper SOLO para esta llamada
+            word_highlight: Override del resaltado por palabra SOLO para esta llamada
 
         Returns:
             SubtitleResult with subtitle file path and segments
         """
+        # Copia local de la config: los overrides del trabajo nunca se escriben
+        # en `config.subtitle`, que es compartida por todos los jobs/pipelines.
+        subtitle_config = copy.copy(self.subtitle_config)
+        if word_highlight is not None:
+            subtitle_config.ENABLE_WORD_HIGHLIGHT = word_highlight
+        # `None` significa "sin override": se respeta `self.model_size` (config global).
+        effective_model_size = model_size if model_size is not None else self.model_size
+
         progress = ProgressCallback(progress_callback)
         progress.update(5, 100, "Initializing...")
 
@@ -453,7 +492,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         try:
             raise_if_cancelled()
             progress.update(10, 100, "Loading Whisper model...")
-            self._load_model()
+            self._load_model(effective_model_size)
 
             raise_if_cancelled()
 
@@ -475,7 +514,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             }
 
             # Los timestamps por palabra habilitan el resaltado estilo TikTok.
-            want_words = self.subtitle_config.ENABLE_WORD_HIGHLIGHT
+            want_words = subtitle_config.ENABLE_WORD_HIGHLIGHT
             if want_words:
                 transcribe_options["word_timestamps"] = True
 
@@ -490,7 +529,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if getattr(self, "_device", "cpu") != "mps":
                     raise
                 logger.warning(f"MPS transcription failed ({e}); retrying on CPU")
-                self._reload_on_cpu()
+                self._reload_on_cpu(effective_model_size)
                 result = self._model.transcribe(str(audio_path), **transcribe_options)
 
             raise_if_cancelled()
@@ -548,8 +587,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             progress.update(85, 100, "Creating subtitle file...")
 
-            # Generate ASS content
-            ass_content = self._segments_to_ass(segments)
+            # Generate ASS content (usa la config local del trabajo)
+            ass_content = self._segments_to_ass(segments, subtitle_config=subtitle_config)
 
             # Conserva los segmentos para poder exportarlos a SRT más tarde.
             self.last_segments = segments

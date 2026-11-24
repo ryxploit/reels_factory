@@ -213,8 +213,8 @@ def test_available_models_include_turbo_variants():
     assert "turbo" in models
     assert "large-v3-turbo" in models
     assert "large-v3" in models
-    # Todos deben existir en openai-whisper.
-    import whisper
+    # Todos deben existir en openai-whisper (si no está instalado, se omite).
+    whisper = pytest.importorskip("whisper")
 
     available = set(whisper.available_models())
     assert set(models).issubset(available)

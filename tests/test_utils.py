@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 from utils import (
+    detect_platform,
     format_duration,
     format_file_size,
     generate_unique_filename,
     get_video_info,
     sanitize_filename,
     validate_tiktok_url,
+    validate_video_url,
 )
 
 
@@ -72,3 +74,114 @@ def test_generate_unique_filename_is_sanitized_and_timestamped():
     name = generate_unique_filename("Mi Video #1")
     assert name.startswith("Mi_Video_1_")
     assert name.endswith(".mp4")
+
+
+# ---------------------------------------------------------------------------
+# Regresión: validación estricta de URLs (antes re.match sin anclar de fin)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "platform"),
+    [
+        # Formatos usados por el propio repo (tests, README y GUI).
+        ("https://www.tiktok.com/@user/video/1234567890", "tiktok"),
+        ("https://www.tiktok.com/@u/video/1", "tiktok"),
+        ("https://tiktok.com/@user/video/123", "tiktok"),
+        ("https://vm.tiktok.com/ZMabc123/", "tiktok"),
+        ("https://vt.tiktok.com/ZMabc123", "tiktok"),
+        ("https://www.tiktok.com/t/ZMabc123", "tiktok"),
+        ("https://www.instagram.com/reel/ABC123xyz/", "instagram"),
+        ("https://www.instagram.com/reels/ABC123xyz/", "instagram"),
+        ("https://www.instagram.com/p/ABC123xyz/", "instagram"),
+        ("https://www.instagram.com/tv/ABC123xyz/", "instagram"),
+        ("https://instagram.com/reel/123", "instagram"),
+        ("https://www.youtube.com/shorts/ABC123xyz", "youtube"),
+        ("https://www.youtube.com/shorts/dQw4w9WgXcQ", "youtube"),
+        ("https://m.youtube.com/shorts/ABC123xyz", "youtube"),
+        ("https://youtu.be/ABC123xyz", "youtube"),
+        ("https://www.youtube.com/watch?v=ABC123xyz", "youtube"),
+        ("https://youtube.com/watch?v=abc", "youtube"),
+    ],
+)
+def test_detect_platform_accepts_legitimate_urls(url, platform):
+    """Las URLs legítimas de las 3 plataformas siguen siendo aceptadas."""
+    assert detect_platform(url) == platform
+    assert validate_video_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Casos auditados: antes devolvían True con re.match sin ancla de fin.
+        "https://youtu.be/abc.evil.com/path",
+        "https://www.youtube.com/shorts/abc\nevil.com",
+        "https://tiktok.com/@user/video/123.attacker.tld",
+        "https://youtu.be/abc;rm -rf /",
+        "http://youtube.com/watch?v=abc",
+        # Host lookalike (sufijo, no coincide con la allowlist exacta).
+        "https://tiktok.com.evil.com/@user/video/123",
+        "https://www.youtube.com.evil.com/shorts/abc",
+        # Credenciales incrustadas (incluido el caso de usuario vacío).
+        "https://user:pass@youtube.com/shorts/abc",
+        "https://@youtu.be/abc",
+        # Otros caracteres peligrosos y esquemas.
+        "https://youtu.be/abc\tRM -rf /",
+        "https://youtu.be/abc\x00evil",
+        "https://youtu.be/abc{evil}",
+        "https://youtu.be/abc|evil",
+        "https://youtu.be/abc\\evil",
+        # Query maliciosa: ID envenenado, meta-caracteres y parámetros sin valor.
+        "https://www.youtube.com/watch?v=abc.evil.com",
+        "https://www.youtube.com/watch?v=abc&x=|rm",
+        "https://www.youtube.com/watch?v=abc&",
+        "https://www.tiktok.com/@u/video/123?utm_source=x;rm -rf /",
+        "https://youtu.be/abc?x=1\nevil.com",
+        "https://youtu.be/abc#frag",
+        "file:///etc/passwd",
+        "no-es-una-url",
+        None,
+    ],
+)
+def test_validate_video_url_rejects_malicious_urls(url):
+    """Ninguna URL maliciosa debe ser atribuida a una plataforma."""
+    assert detect_platform(url) is None
+    assert validate_video_url(url) is False
+
+
+@pytest.mark.parametrize(
+    ("url", "platform"),
+    [
+        # TikTok copia enlaces con utm_* al compartirlos desde la app.
+        (
+            "https://www.tiktok.com/@user/video/123?utm_source=xxx&utm_campaign=yyy",
+            "tiktok",
+        ),
+        ("https://vm.tiktok.com/ZMabc123/?utm_source=xxx", "tiktok"),
+        (
+            "https://www.instagram.com/reel/ABC123xyz/?igshid=MzRlODBiNWFlZA%3D%3D",
+            "instagram",
+        ),
+        ("https://instagram.com/reel/123?utm_source=ig_web_copy_link", "instagram"),
+        ("https://www.youtube.com/shorts/ABC123xyz?feature=share&utm_source=xxx", "youtube"),
+        ("https://youtu.be/ABC123xyz?si=abc123-xyz&utm_source=xxx", "youtube"),
+        # watch admite 'v' + parámetros extra (t=, utm_*).
+        ("https://www.youtube.com/watch?v=ABC123xyz&t=30", "youtube"),
+        (
+            "https://www.youtube.com/watch?v=ABC123xyz&t=30&utm_source=xxx&utm_campaign=yyy",
+            "youtube",
+        ),
+    ],
+)
+def test_detect_platform_accepts_tracking_query_params(url, platform):
+    """Regresión: los parámetros de tracking reales no deben romper el flujo."""
+    assert detect_platform(url) == platform
+    assert validate_video_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url", ["http://www.tiktok.com/@user/video/123", "ftp://tiktok.com/@u/video/1"]
+)
+def test_validate_tiktok_url_rejects_non_https(url):
+    """validate_tiktok_url comparte la misma política estricta."""
+    assert validate_tiktok_url(url) is False

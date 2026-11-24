@@ -5,6 +5,27 @@ Todas las versiones relevantes de ReelsFactoryPro.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el versionado sigue [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Añadido
+
+- **Cobertura con `pytest-cov`**: la configuración de pytest reporta cobertura sin umbral `--cov-fail-under`. Medición real: **185 tests pasando**, 0 fallos y 0 skips (Python 3.13.18) y **42 % de cobertura** (2896 statements, 1682 miss). La GUI (`app.py`) sigue al 0 %: no tiene tests automatizados.
+- **Validación estricta de URLs**: solo se aceptan URLs HTTPS de hosts permitidos (TikTok, Instagram Reels, YouTube Shorts), con `fullmatch` en el path y query segura (se permiten parámetros de tracking conocidos y se descartan el resto).
+- **Logs de Qt desde el hilo principal**: los mensajes generados en hilos de trabajo se reenvían al hilo de la GUI para evitar accesos concurrentes a los widgets.
+- **Documentación honesta y actualizada**: README y CHANGELOG reflejan la versión real 1.5.0, las cifras reales de tests y cobertura, la API real de `config.py` y el estado veraz de la CI.
+
+### Cambiado
+
+- **Estado final del lote veraz**: un trabajo solo se marca «Listo» si todo salió bien; si hubo avisos, errores o cancelación, el estado es «Listo con advertencias», «Falló» o «Cancelado».
+- **Pre-fetch sin descargas duplicadas**: la descarga anticipada del siguiente trabajo usa join/lock y logging, y reutiliza el resultado ya descargado en vez de repetirlo.
+- **Configuración por trabajo sin efectos globales**: las opciones por trabajo se pasan mediante `PipelineSettings` y parámetros explícitos, en lugar de mutar el singleton global `config.subtitle` / `config.video`.
+- **Afirmaciones de calidad matizadas**: se sustituye «100% testeado» por «185 tests y 42 % de cobertura medidos con `pytest-cov`; la GUI (`app.py`) aún no tiene tests automatizados».
+
+### Corregido
+
+- **Causas reales de los 4 jobs de CI fallando**: se añadió `numpy` a las dependencias de test, se eliminaron los imports duros de `whisper` y se corrigieron 3 imports sin usar (F401) en `app.py`. El último run remoto conocido (`44215696440`) seguía fallando y el fix aún no está mergeado: **no se afirma que la CI esté verde**; debe verificarse en el próximo run.
+- **Versión y contradicciones del README**: 1.4.1 → 1.5.0; el roadmap ya no lista Instagram/YouTube Shorts como soporte pendiente; el snippet de configuración usa las dataclasses reales (`config.video`, `config.subtitle`, `config.branding`, …) en lugar de constantes de módulo inexistentes.
+
 ## [1.5.0] - 2026-11-14
 
 ### Añadido

@@ -30,12 +30,14 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            pyproject.toml
 
       - name: Install dependencies
         run: |
           python -m pip install -U pip
           python -m pip install -r requirements-dev.txt
-          # Solo las dependencias necesarias para los tests (sin torch/whisper).
+          # requirements-dev.txt ya incluye numpy y pytest-cov; yt-dlp va aparte
+          # para no arrastrar torch/whisper (los tests los omiten con importorskip).
           python -m pip install yt-dlp
 
       - name: Run unit tests
@@ -52,7 +54,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            pyproject.toml
 
       - name: Install dependencies
         run: |

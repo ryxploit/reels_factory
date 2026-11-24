@@ -34,10 +34,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.2.0",
+    "pytest-cov>=7.0.0",
     "ruff>=0.17.5",
     "pyinstaller>=6.22.3",
     "dmgbuild>=1.6.7; sys_platform == 'darwin'",
     "cx_Freeze>=8.7.4; sys_platform == 'win32'",
+    # Para recolectar los tests sin torch/whisper.
+    "numpy>=2.0.2,<2.6",
 ]
 
 [project.scripts]
@@ -74,9 +77,36 @@ py-modules = [
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra --strict-markers"
+# Cobertura de los módulos de producción (sin umbral: solo se reporta).
+addopts = "-ra --strict-markers --cov=. --cov-report=term-missing:skip-covered"
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # PySide6 registra rutas fuente fantasma bajo cwd (shibokensupport, etc.).
+    "ignore:Couldn't parse .*:coverage.exceptions.CoverageWarning",
+]
+
+[tool.coverage.run]
+# Layout plano: los módulos de producción viven en la raíz del repo.
+source = ["."]
+omit = [
+    "tests/*",
+    "build_tools/*",
+    "build/*",
+    "dist/*",
+    ".venv/*",
+    "shibokensupport/*",
+    "signature_bootstrap.py",
+    "pyscript",
+    "*/tests/*",
+    "*/build_tools/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]
 
 [tool.ruff]

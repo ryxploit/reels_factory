@@ -14,6 +14,7 @@ from datetime import datetime
 from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import ParseResult, urlparse
 
 from deps import resolve_binaries
 
@@ -58,47 +59,145 @@ def setup_logger(
     return logger
 
 
-def validate_tiktok_url(url: str) -> bool:
-    """
-    Validate if the URL is a valid TikTok video URL.
+# ---------------------------------------------------------------------------
+# Validación estricta de URLs
+# ---------------------------------------------------------------------------
+# Las URLs llegan desde el portapapeles y desde archivos .txt arrastrados a la
+# GUI, y se pasan directamente a yt-dlp (con cookies del navegador activadas).
+# Por eso se validan con urlparse + allowlist de hosts exactos + fullmatch:
+# un re.match sin anclar de fin aceptaba sufijos como ".evil.com" o ";rm -rf /".
 
-    Args:
-        url: URL to validate
+#: Caracteres prohibidos en CUALQUIER parte de la URL cruda:
+#: \x00-\x20 cubre NUL, \n, \r, \t y el espacio; el resto son meta-caracteres
+#: de shell, comillas y backslash que nunca aparecen en una URL legítima.
+#: "&" NO está aquí: es el separador legítimo de parámetros de tracking. La
+#: query se valida aparte con _SAFE_QUERY_RE.
+_UNSAFE_URL_CHARS = re.compile(r"[\x00-\x20\x7f{}|;\\`$\"'<>()]")
 
-    Returns:
-        True if valid TikTok URL, False otherwise
-    """
-    return any(re.match(pattern, url) for pattern in TIKTOK_URL_PATTERNS)
+#: Caracteres permitidos en la query (sin '?', '#', ':', '/', ';' ni meta-caracteres).
+#: Cubre utm_*, t=..., y la mayoría de parámetros genéricos de las plataformas.
+_SAFE_QUERY_RE = re.compile(r"\A[A-Za-z0-9._~%+=&,-]*\Z")
 
+#: Nombre de parámetro de query permitido (claves de tracking tipo utm_source).
+_SAFE_QUERY_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.-]*\Z")
 
-#: Patrones de URL de TikTok soportados.
-TIKTOK_URL_PATTERNS = (
-    r"https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/\d+",
-    r"https?://(?:vm|vt)\.tiktok\.com/[\w]+",
-    r"https?://(?:www\.)?tiktok\.com/t/[\w]+",
-)
+#: Patrones anclados para el PATH (urlparse separa la query). Se aplican con
+#: re.fullmatch para que no haya sufijos maliciosos en la ruta.
+_TIKTOK_VIDEO_PATH = r"/@[\w.-]+/video/\d+/?"
+_TIKTOK_SHORT_PATH = r"/t/[\w-]+/?"
+_TIKTOK_CODE_PATH = r"/[\w-]+/?"
+_YT_SHORTS_PATH = r"/shorts/[\w-]+/?"
+_YT_WATCH_PATH = r"/watch"  # la query (v=ID) se valida en _valid_watch_query
+_YT_CODE_PATH = r"/[\w-]+/?"
+
+#: Patrones de URL de TikTok soportados (se mantienen los nombres públicos).
+TIKTOK_URL_PATTERNS = (_TIKTOK_VIDEO_PATH, _TIKTOK_SHORT_PATH, _TIKTOK_CODE_PATH)
 
 #: Patrones de URL de Instagram Reels.
-INSTAGRAM_URL_PATTERNS = (
-    r"https?://(?:www\.)?instagram\.com/reel/[\w-]+",
-    r"https?://(?:www\.)?instagram\.com/reels/[\w-]+",
-    r"https?://(?:www\.)?instagram\.com/p/[\w-]+",
-    r"https?://(?:www\.)?instagram\.com/tv/[\w-]+",
-)
+INSTAGRAM_URL_PATTERNS = (r"/(?:reel|reels|p|tv)/[\w-]+/?",)
 
 #: Patrones de URL de YouTube Shorts.
-YOUTUBE_URL_PATTERNS = (
-    r"https?://(?:www\.|m\.)?youtube\.com/shorts/[\w-]+",
-    r"https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+",
-    r"https?://youtu\.be/[\w-]+",
-)
+YOUTUBE_URL_PATTERNS = (_YT_SHORTS_PATH, _YT_WATCH_PATH, _YT_CODE_PATH)
 
-#: Todos los patrones soportados, por plataforma.
+#: Todos los patrones soportados, por plataforma (compatibilidad pública).
 SUPPORTED_URL_PATTERNS: dict[str, tuple[str, ...]] = {
     "tiktok": TIKTOK_URL_PATTERNS,
     "instagram": INSTAGRAM_URL_PATTERNS,
     "youtube": YOUTUBE_URL_PATTERNS,
 }
+
+#: Allowlist de hosts EXACTOS por plataforma. Nunca sufijos ni comodines:
+#: "tiktok.com.evil.com" no es "tiktok.com".
+ALLOWED_HOSTS: dict[str, frozenset[str]] = {
+    "tiktok": frozenset({"tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"}),
+    "instagram": frozenset({"instagram.com", "www.instagram.com"}),
+    "youtube": frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}),
+}
+
+#: Mapa inverso host -> plataforma, derivado de la allowlist.
+_HOST_PLATFORM = {host: platform for platform, hosts in ALLOWED_HOSTS.items() for host in hosts}
+
+#: Patrones permitidos por host: evita mezclar formatos entre dominios (p. ej.
+#: un código tipo vm.tiktok.com bajo www.tiktok.com o un /watch en youtu.be).
+_HOST_PATTERNS: dict[str, tuple[str, ...]] = {
+    "tiktok.com": (_TIKTOK_VIDEO_PATH, _TIKTOK_SHORT_PATH),
+    "www.tiktok.com": (_TIKTOK_VIDEO_PATH, _TIKTOK_SHORT_PATH),
+    "vm.tiktok.com": (_TIKTOK_CODE_PATH,),
+    "vt.tiktok.com": (_TIKTOK_CODE_PATH,),
+    "instagram.com": INSTAGRAM_URL_PATTERNS,
+    "www.instagram.com": INSTAGRAM_URL_PATTERNS,
+    "youtube.com": (_YT_SHORTS_PATH, _YT_WATCH_PATH),
+    "www.youtube.com": (_YT_SHORTS_PATH, _YT_WATCH_PATH),
+    "m.youtube.com": (_YT_SHORTS_PATH, _YT_WATCH_PATH),
+    "youtu.be": (_YT_CODE_PATH,),
+}
+
+
+def _parse_strict_url(url: str) -> ParseResult | None:
+    """Parsea una URL exigiendo HTTPS y rechazando contenido peligroso.
+
+    Returns:
+        El resultado de urlparse, o None si la URL no es apta para yt-dlp.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    # Rechazar caracteres de control, espacios, meta-caracteres de shell y
+    # backslashes antes de cualquier otro procesamiento.
+    if _UNSAFE_URL_CHARS.search(url):
+        return None
+    try:
+        parsed = urlparse(url)
+        # Sin credenciales incrustadas ("user:pass@host", también "@host") y
+        # sin fragmentos: el fragmento nunca debe llegar a yt-dlp.
+        if "@" in parsed.netloc or parsed.fragment:
+            return None
+        # Esquema SOLO https (urlparse ya normaliza a minúsculas).
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            return None
+        # Un puerto explícito no es necesario y permitiría apuntar a otros
+        # servicios; la allowlist es de hosts, no de host:puerto.
+        if parsed.port is not None:
+            return None
+    except ValueError:
+        # Puertos mal formados, IPv6 inválido, etc.
+        return None
+    return parsed
+
+
+def _valid_watch_query(query: str) -> bool:
+    """Valida la query de /watch: exige un único 'v' con formato de ID.
+
+    Se permiten parámetros extra benignos (t=30, utm_source=..., si=...),
+    siempre que sus claves y valores usen solo caracteres seguros.
+    """
+    if not query:
+        return False
+
+    video_ids: list[str] = []
+    for param in query.split("&"):
+        if "=" not in param:
+            return False  # parámetro sin valor: rechazar
+        key, value = param.split("=", 1)
+        if _SAFE_QUERY_KEY_RE.fullmatch(key) is None or _SAFE_QUERY_RE.fullmatch(value) is None:
+            return False
+        if key == "v":
+            video_ids.append(value)
+
+    # "v" debe aparecer una sola vez y ser un ID limpio (sin puntos ni rutas).
+    return len(video_ids) == 1 and re.fullmatch(r"[\w-]+", video_ids[0]) is not None
+
+
+def validate_tiktok_url(url: str) -> bool:
+    """
+    Valida si la URL es un vídeo de TikTok con la política estricta.
+
+    Args:
+        url: URL a validar
+
+    Returns:
+        True si es una URL de TikTok válida, False en caso contrario
+    """
+    return detect_platform(url) == "tiktok"
 
 
 def detect_platform(url: str) -> str | None:
@@ -111,10 +210,31 @@ def detect_platform(url: str) -> str | None:
     Returns:
         "tiktok", "instagram", "youtube" o None si no es soportada
     """
-    for platform, patterns in SUPPORTED_URL_PATTERNS.items():
-        if any(re.match(pattern, url) for pattern in patterns):
-            return platform
-    return None
+    parsed = _parse_strict_url(url)
+    if parsed is None:
+        return None
+
+    host = parsed.hostname
+    platform = _HOST_PLATFORM.get(host)
+    patterns = _HOST_PATTERNS.get(host, ())
+    if platform is None or not patterns:
+        return None
+
+    # El PATH se valida con fullmatch: los sufijos maliciosos van aquí y se
+    # rechazan aunque la query sea legítima (p. ej. youtu.be/abc.evil.com/path).
+    if not any(re.fullmatch(pattern, parsed.path) for pattern in patterns):
+        return None
+
+    # La query se valida por separado: se admiten parámetros de tracking, pero
+    # nunca caracteres de control, espacios ni meta-caracteres de shell.
+    if parsed.query and _SAFE_QUERY_RE.fullmatch(parsed.query) is None:
+        return None
+
+    # En /watch?v=ID se exige además un "v" único y bien formado.
+    if parsed.path == "/watch" and not _valid_watch_query(parsed.query):
+        return None
+
+    return platform
 
 
 def validate_video_url(url: str) -> bool:

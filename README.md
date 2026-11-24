@@ -7,7 +7,13 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 ![Python](https://img.shields.io/badge/Python-3.11%20|%203.12%20|%203.13-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-lightgrey.svg)
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)
-![Tests](https://img.shields.io/badge/tests-134%20passing-success.svg)
+![Tests](https://img.shields.io/badge/tests-185%20passing-success.svg)
+![Coverage](https://img.shields.io/badge/coverage-42%25-yellow.svg)
+
+> **Estado real:** 185 tests en verde y 42 % de cobertura medidos con `pytest-cov`.
+> La GUI (`app.py`) aún no tiene tests automatizados. «Production Ready» describe una
+> app funcional y probada a nivel de módulos, **no** que la CI esté verde en GitHub
+> (detalle en la sección Desarrollo).
 
 ---
 
@@ -27,14 +33,16 @@ Herramienta profesional y totalmente funcional para descargar videos de TikTok s
 - **🏷️ Branding** - Logo PNG en esquina inferior derecha
 - **🛡️ Evasión de huella digital precisa** - Sincronía A/V perfecta (`setpts` + `atempo`), desplazamiento gamma, microdesplazamiento de encuadre y EQ
 - **🔍 Detección de marca de agua** - Te muestra la zona sospechosa para confirmarla
-- **⚡ Pre-fetching de lotes** - Descarga anticipada del siguiente trabajo mientras se procesa el actual
+- **⚡ Pre-fetching de lotes** - Descarga anticipada del siguiente trabajo mientras se procesa el actual, con join/lock y logs: nunca se descarga dos veces el mismo vídeo
 - **📊 Exportación de informes** - Exporta el historial de lote a CSV o JSON
 - **🖥️ Interfaz Gráfica (PySide6)** - Cola, progreso, miniaturas, logs y controles completos
 - **💾 Preferencias persistentes** - Tus opciones se recuerdan entre sesiones
 - **🔁 Cola persistente** - Reanuda tras un cierre inesperado y reintenta los fallidos
 - **⚡ Optimizado para Apple Silicon** - M1/M2/M3/M4 nativamente
-- **🔧 Modular y escalable** - Código limpio, reutilizable y 100% testeado
+- **🔧 Modular y escalable** - Código limpio y reutilizable, con 185 tests automatizados y 42 % de cobertura medidos con `pytest-cov` (la GUI `app.py` aún no tiene tests)
 - **✅ Verificación del resultado** - Avisa si el vídeo no cumple las specs de la plataforma
+- **📋 Estado final veraz del lote** - Un trabajo solo se marca «Listo» si todo salió bien; si hubo avisos, errores o cancelación, el estado es «Listo con advertencias», «Falló» o «Cancelado»
+- **🔒 Validación estricta de URLs** - Solo HTTPS, hosts permitidos (TikTok, Instagram Reels, YouTube Shorts), path validado con `fullmatch` y query segura (se descartan parámetros de tracking no autorizados)
 
 ---
 
@@ -213,29 +221,51 @@ reels_factory/
 
 ## ⚙️ Configuración
 
-En `config.py`:
+La configuración vive en dataclasses agrupadas por área (`VideoConfig`,
+`SubtitleConfig`, `DownloadConfig`, `BrandingConfig`, `FingerprintConfig`,
+`PathConfig`) y se accede a través del singleton `config` de `config.py`:
 
 ```python
-# Video
-VIDEO_CODEC = "libx264"  # Codec H.264
-VIDEO_CRF = 23  # Calidad (18-28)
-MAX_DURATION_SECONDS = 55  # Máximo 55s
+from config import config
 
-# Subtítulos
-MODEL_SIZE = "base"  # tiny|base|small|medium|large
-FONT_SIZE = 24  # Tamaño fuente
-MARGIN_V = 50  # Margen inferior
+# Video (config.video)
+config.video.VIDEO_CODEC = "libx264"  # Codec H.264
+config.video.VIDEO_BITRATE = "4500k"  # Calidad/bitrate
+config.video.MAX_DURATION_SECONDS = 55  # Máximo 55 s
 
-# Branding
-LOGO_WIDTH = 150  # Ancho logo px
-LOGO_OPACITY = 0.8  # Transparencia
+# Subtítulos (config.subtitle)
+config.subtitle.MODEL_SIZE = "base"  # tiny|base|small|medium|large-v3|turbo|...
+config.subtitle.FONT_SIZE = 24  # Tamaño de fuente
+config.subtitle.MARGIN_V = 50  # Margen inferior
+
+# Branding (config.branding)
+config.branding.LOGO_WIDTH = 150  # Ancho del logo en px
+config.branding.LOGO_OPACITY = 0.8  # Transparencia
+```
+
+Los otros grupos son `config.download` (cookies y pre-fetch), `config.fingerprint`
+(evasión de huella) y `config.paths` (rutas). Para opciones **por trabajo** no
+modifiques el singleton global: usa `PipelineSettings` de `pipeline.py` y pásalo a
+`ReelsPipeline.run_one()`:
+
+```python
+from pipeline import PipelineSettings, ReelsPipeline
+
+settings = PipelineSettings(
+    subtitles=True,
+    whisper_model="turbo",  # solo para este trabajo
+    branding=True,
+    word_highlight=True,
+    loudnorm=False,
+)
+resultado = ReelsPipeline().run_one(url, settings)
 ```
 
 ---
 
 ## Whisper (MPS en Apple Silicon)
 
-`openai-whisper` usa PyTorch. Si `torch.backends.mps.is_available()` devuelve `True`, la app cargará Whisper en `mps` automáticamente (si `USE_MPS=True` en `config.py`).
+`openai-whisper` usa PyTorch. Si `torch.backends.mps.is_available()` devuelve `True`, la app cargará Whisper en `mps` automáticamente (si `config.subtitle.USE_MPS=True`).
 
 Comprobación rápida:
 
@@ -384,7 +414,7 @@ python3.13 -m venv .venv && source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -e ".[dev]"
 
-# Tests
+# Tests (pytest reporta cobertura según pyproject.toml)
 python -m pytest -q
 
 # Lint + formato
@@ -392,14 +422,23 @@ python -m ruff check .
 python -m ruff format .
 ```
 
+La cobertura se mide con `pytest-cov` y se reporta por la configuración de
+`pyproject.toml` (sin umbral `--cov-fail-under`). Referencia local: 185 tests
+pasando, 0 fallos, 0 skips y 42 % de cobertura (Python 3.13.18).
+
 La CI (`.github/workflows/ci.yml`) ejecuta los tests en Python 3.11/3.12/3.13 y
-verifica lint y formato en cada PR a `main`.
+verifica lint y formato en cada PR a `main`. En esta sesión se corrigieron las
+causas reales de los 4 jobs que fallaban: `numpy` faltaba en las dependencias de
+test, había imports duros de `whisper` y 3 imports sin usar (F401) en `app.py`.
+**Esto aún no está verificado en GitHub**: el último run remoto conocido
+(`44215696440`) seguía fallando y el fix todavía no se ha mergeado. Hay que
+confirmarlo en el próximo run.
 
 ---
 
 ## 📊 Roadmap
 
-- [ ] Soporte para más plataformas (Instagram, YouTube Shorts)
+- [x] Soporte para más plataformas (Instagram, YouTube Shorts)
 - [ ] Editor visual de subtítulos
 - [ ] Watermark personalizado (no solo logo)
 - [ ] Batch processing automático
@@ -442,4 +481,4 @@ Para bugs, sugerencias o preguntas:
 
 **Creado con ❤️ por ingenieros de software para creadores de contenido**
 
-v1.4.1 - Production Ready
+v1.5.0 - Production Ready (estado real: 185 tests, 42 % de cobertura; CI pendiente de verificación)

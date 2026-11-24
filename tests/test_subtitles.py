@@ -64,7 +64,7 @@ def test_model_change_invalidates_loaded_model(generator):
         calls.append(name)
         return object()
 
-    import whisper
+    whisper = pytest.importorskip("whisper")
 
     original = whisper.load_model
     whisper.load_model = fake_load
